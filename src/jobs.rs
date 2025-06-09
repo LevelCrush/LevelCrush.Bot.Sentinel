@@ -1,11 +1,16 @@
 use crate::db::Database;
+use crate::media::MediaCache;
 use anyhow::Result;
 use serenity::all::Context;
 use std::sync::Arc;
 use tokio_cron_scheduler::{Job, JobScheduler};
 use tracing::info;
 
-pub async fn start_background_jobs(ctx: Arc<Context>, db: Database) -> Result<()> {
+pub async fn start_background_jobs(
+    ctx: Arc<Context>,
+    db: Database,
+    media_cache: MediaCache,
+) -> Result<()> {
     let scheduler = JobScheduler::new().await?;
 
     let ctx_clone = ctx.clone();
@@ -26,6 +31,24 @@ pub async fn start_background_jobs(ctx: Arc<Context>, db: Database) -> Result<()
     })?;
 
     scheduler.add(user_sync_job).await?;
+
+    // Media cleanup job - runs daily at 3 AM
+    let db_cleanup = db.clone();
+    let media_cache_cleanup = media_cache.clone();
+
+    let media_cleanup_job = Job::new_async("0 0 3 * * *", move |_uuid, _l| {
+        let db = db_cleanup.clone();
+        let media_cache = media_cache_cleanup.clone();
+        Box::pin(async move {
+            tokio::spawn(async move {
+                if let Err(e) = cleanup_old_media(db, media_cache).await {
+                    tracing::error!("Failed to cleanup old media: {}", e);
+                }
+            });
+        })
+    })?;
+
+    scheduler.add(media_cleanup_job).await?;
     scheduler.start().await?;
 
     info!("Background jobs started");
@@ -101,5 +124,36 @@ async fn sync_all_users(ctx: Arc<Context>, db: Database) -> Result<()> {
     }
 
     info!("User sync job completed");
+    Ok(())
+}
+
+async fn cleanup_old_media(db: Database, media_cache: MediaCache) -> Result<()> {
+    info!("Starting media cleanup job");
+
+    // Check if media caching is enabled
+    if let Ok(Some(cache_enabled)) = db.get_setting("cache_media").await {
+        if cache_enabled != "true" {
+            info!("Media caching is disabled, skipping cleanup");
+            return Ok(());
+        }
+    }
+
+    // Delete files older than 31 days
+    match media_cache.cleanup_old_files(31).await {
+        Ok(count) => info!("Deleted {} old cached files", count),
+        Err(e) => tracing::error!("Failed to cleanup cached files: {}", e),
+    }
+
+    // Get list of old attachments from database
+    match db.get_old_cached_media(31).await {
+        Ok(old_paths) => {
+            info!("Found {} old media entries in database", old_paths.len());
+            // Note: We don't clear the database entries here since the files are already deleted
+            // The local_path column serves as a record that the file was once cached
+        }
+        Err(e) => tracing::error!("Failed to query old cached media: {}", e),
+    }
+
+    info!("Media cleanup job completed");
     Ok(())
 }

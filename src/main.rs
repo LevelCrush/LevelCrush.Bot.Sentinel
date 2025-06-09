@@ -13,21 +13,25 @@ use tracing::{error, info};
 mod commands;
 mod db;
 mod jobs;
+mod media;
 
 use commands::CommandHandler;
 use db::Database;
+use media::MediaCache;
 
 struct Handler {
     db: Database,
     command_handler: CommandHandler,
+    media_cache: MediaCache,
 }
 
 impl Handler {
-    fn new(db: Database) -> Self {
+    fn new(db: Database, media_cache: MediaCache) -> Self {
         let command_handler = CommandHandler::new(db.clone());
         Self {
             db,
             command_handler,
+            media_cache,
         }
     }
 }
@@ -67,6 +71,54 @@ impl EventHandler for Handler {
                 .await
             {
                 error!("Failed to log message: {}", e);
+            }
+
+            // Handle attachments if media caching is enabled
+            if !msg.attachments.is_empty() {
+                if let Ok(Some(cache_enabled)) = self.db.get_setting("cache_media").await {
+                    if cache_enabled == "true" {
+                        for attachment in &msg.attachments {
+                            info!(
+                                "[ATTACHMENT] Message {} has attachment: {} ({})",
+                                msg.id, attachment.filename, attachment.size
+                            );
+
+                            // Try to download and cache the attachment
+                            let local_path = if let Ok(path) = self
+                                .media_cache
+                                .download_attachment(
+                                    &attachment.url,
+                                    &attachment.filename,
+                                    attachment.content_type.as_deref(),
+                                )
+                                .await
+                            {
+                                self.media_cache.get_relative_path(&path)
+                            } else {
+                                error!("Failed to download attachment: {}", attachment.filename);
+                                None
+                            };
+
+                            // Log attachment to database
+                            if let Err(e) = self
+                                .db
+                                .log_attachment(
+                                    msg.id.get(),
+                                    attachment.id.get(),
+                                    &attachment.filename,
+                                    attachment.content_type.as_deref(),
+                                    attachment.size as u64,
+                                    &attachment.url,
+                                    &attachment.proxy_url,
+                                    local_path.as_deref(),
+                                )
+                                .await
+                            {
+                                error!("Failed to log attachment: {}", e);
+                            }
+                        }
+                    }
+                }
             }
 
             let nickname = msg.member.as_ref().and_then(|m| m.nick.as_deref());
@@ -219,7 +271,9 @@ impl EventHandler for Handler {
         info!("{} is connected!", ready.user.name);
 
         let ctx_arc = Arc::new(ctx);
-        if let Err(e) = jobs::start_background_jobs(ctx_arc, self.db.clone()).await {
+        if let Err(e) =
+            jobs::start_background_jobs(ctx_arc, self.db.clone(), self.media_cache.clone()).await
+        {
             error!("Failed to start background jobs: {}", e);
         }
     }
@@ -248,6 +302,10 @@ async fn main() -> Result<()> {
     info!("Running database migrations...");
     db.run_migrations().await?;
 
+    info!("Setting up media cache...");
+    let media_cache = MediaCache::new("./media_cache");
+    media_cache.ensure_directories().await?;
+
     let intents = GatewayIntents::GUILDS
         | GatewayIntents::GUILD_MESSAGES
         | GatewayIntents::GUILD_VOICE_STATES
@@ -257,7 +315,7 @@ async fn main() -> Result<()> {
         | GatewayIntents::DIRECT_MESSAGES
         | GatewayIntents::GUILD_MESSAGE_TYPING;
 
-    let handler = Handler::new(db);
+    let handler = Handler::new(db.clone(), media_cache.clone());
 
     let mut client = Client::builder(&token, intents)
         .event_handler(handler)

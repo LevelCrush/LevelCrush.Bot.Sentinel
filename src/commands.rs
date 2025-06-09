@@ -27,6 +27,7 @@ impl CommandHandler {
             "/kick" => self.handle_kick(ctx, msg, &parts[1..]).await?,
             "/ban" => self.handle_ban(ctx, msg, &parts[1..]).await?,
             "/timeout" => self.handle_timeout(ctx, msg, &parts[1..]).await?,
+            "/cache" => self.handle_cache_toggle(ctx, msg, &parts[1..]).await?,
             _ => {}
         }
 
@@ -56,6 +57,11 @@ impl CommandHandler {
                 .field(
                     "/timeout <user_id> <guild_id> <duration_minutes> [reason]",
                     "Timeout a user (whitelisted only)",
+                    false,
+                )
+                .field(
+                    "/cache [on|off]",
+                    "Toggle media caching (whitelisted only)",
                     false,
                 )
                 .colour(Colour::BLUE);
@@ -368,6 +374,76 @@ impl CommandHandler {
                     CreateMessage::new().content("Invalid user ID, guild ID, or duration"),
                 )
                 .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn handle_cache_toggle(&self, ctx: &Context, msg: &Message, args: &[&str]) -> Result<()> {
+        if !self.db.is_whitelisted(msg.author.id.get()).await? {
+            msg.author
+                .direct_message(
+                    &ctx.http,
+                    CreateMessage::new().content("You are not authorized to use this command."),
+                )
+                .await?;
+            return Ok(());
+        }
+
+        if args.is_empty() {
+            // Show current status
+            let current_status = self
+                .db
+                .get_setting("cache_media")
+                .await?
+                .unwrap_or_else(|| "false".to_string());
+
+            msg.author
+                .direct_message(
+                    &ctx.http,
+                    CreateMessage::new().content(format!(
+                        "Media caching is currently: {}",
+                        if current_status == "true" {
+                            "ENABLED"
+                        } else {
+                            "DISABLED"
+                        }
+                    )),
+                )
+                .await?;
+        } else {
+            match args[0].to_lowercase().as_str() {
+                "on" | "enable" | "true" => {
+                    self.db.set_setting("cache_media", "true").await?;
+                    info!("[SETTING] {} enabled media caching", msg.author.id);
+
+                    msg.author
+                        .direct_message(
+                            &ctx.http,
+                            CreateMessage::new().content("Media caching has been ENABLED"),
+                        )
+                        .await?;
+                }
+                "off" | "disable" | "false" => {
+                    self.db.set_setting("cache_media", "false").await?;
+                    info!("[SETTING] {} disabled media caching", msg.author.id);
+
+                    msg.author
+                        .direct_message(
+                            &ctx.http,
+                            CreateMessage::new().content("Media caching has been DISABLED"),
+                        )
+                        .await?;
+                }
+                _ => {
+                    msg.author
+                        .direct_message(
+                            &ctx.http,
+                            CreateMessage::new().content("Usage: /cache [on|off]"),
+                        )
+                        .await?;
+                }
+            }
         }
 
         Ok(())

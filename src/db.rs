@@ -105,6 +105,47 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS message_attachments (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                message_id BIGINT NOT NULL,
+                attachment_id BIGINT NOT NULL,
+                filename VARCHAR(255),
+                content_type VARCHAR(100),
+                size BIGINT,
+                url TEXT,
+                proxy_url TEXT,
+                local_path VARCHAR(500),
+                cached_at DATETIME,
+                INDEX idx_message_id (message_id),
+                INDEX idx_attachment_id (attachment_id),
+                INDEX idx_cached_at (cached_at)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS system_settings (
+                setting_key VARCHAR(100) PRIMARY KEY,
+                setting_value TEXT,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Insert default setting for media caching
+        sqlx::query(
+            "INSERT IGNORE INTO system_settings (setting_key, setting_value) VALUES ('cache_media', 'true')"
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 
@@ -227,6 +268,87 @@ impl Database {
     pub async fn remove_from_whitelist(&self, user_id: u64) -> Result<()> {
         sqlx::query("DELETE FROM command_whitelist WHERE discord_user_id = ?")
             .bind(user_id as i64)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn log_attachment(
+        &self,
+        message_id: u64,
+        attachment_id: u64,
+        filename: &str,
+        content_type: Option<&str>,
+        size: u64,
+        url: &str,
+        proxy_url: &str,
+        local_path: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO message_attachments 
+            (message_id, attachment_id, filename, content_type, size, url, proxy_url, local_path, cached_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+            "#
+        )
+        .bind(message_id as i64)
+        .bind(attachment_id as i64)
+        .bind(filename)
+        .bind(content_type)
+        .bind(size as i64)
+        .bind(url)
+        .bind(proxy_url)
+        .bind(local_path)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        let result = sqlx::query_scalar::<_, String>(
+            "SELECT setting_value FROM system_settings WHERE setting_key = ?",
+        )
+        .bind(key)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(result)
+    }
+
+    pub async fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO system_settings (setting_key, setting_value)
+            VALUES (?, ?)
+            ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)
+            "#,
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn get_old_cached_media(&self, days: i64) -> Result<Vec<String>> {
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(days);
+
+        let paths = sqlx::query_scalar::<_, String>(
+            "SELECT local_path FROM message_attachments WHERE cached_at < ? AND local_path IS NOT NULL"
+        )
+        .bind(cutoff)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(paths)
+    }
+
+    pub async fn clear_local_path(&self, attachment_id: u64) -> Result<()> {
+        sqlx::query("UPDATE message_attachments SET local_path = NULL WHERE attachment_id = ?")
+            .bind(attachment_id as i64)
             .execute(&self.pool)
             .await?;
 

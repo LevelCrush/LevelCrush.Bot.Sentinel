@@ -189,6 +189,14 @@ GatewayIntents::GUILDS
 - **Embed Limits**: Max 25 fields, 6000 total characters
 - **Bulk Delete**: Can only delete messages < 14 days old
 
+### Media Caching
+
+- **Storage**: Files organized in `./media_cache/` by type (images, videos, audio, documents, other)
+- **Naming**: Files renamed with UUIDs to avoid collisions
+- **Toggle**: Can be enabled/disabled via `/cache` command or database setting
+- **Cleanup**: Automatic deletion of files older than 31 days
+- **Database**: Tracks all attachments with local paths when cached
+
 ### Performance Tips
 
 - Use cache when possible instead of HTTP requests
@@ -196,6 +204,7 @@ GatewayIntents::GUILDS
 - Implement connection pooling for MariaDB via `sqlx`
 - Use indexed fields for fast log retrieval
 - Consider sharding for large-scale deployments
+- Media caching can be disabled to save disk space
 
 ### Security
 
