@@ -1453,7 +1453,7 @@ impl EventHandler for Handler {
                                 true
                             };
 
-                            let response_content = if can_snort {
+                            let (response_content, should_attach_meme) = if can_snort {
                                 // Increment counter
                                 match self
                                     .db
@@ -1465,38 +1465,51 @@ impl EventHandler for Handler {
                                         "[SLASH COMMAND] {} used /snort in guild {} - count is now {}",
                                         command.user.name, guild_id, count
                                     );
-                                        format!(
-                                            "We have snorted brightdust {}",
-                                            Self::format_snort_count(count)
+                                        (
+                                            format!(
+                                                "We have snorted brightdust {}",
+                                                Self::format_snort_count(count)
+                                            ),
+                                            true // Successfully incremented, attach meme
                                         )
                                     }
                                     Err(e) => {
                                         error!("Failed to increment snort counter: {}", e);
-                                        "Failed to snort brightdust! Database error.".to_string()
+                                        ("Failed to snort brightdust! Database error.".to_string(), false)
                                     }
                                 }
                             } else {
                                 let remaining = cooldown_seconds as i64
                                     - (chrono::Utc::now() - user_last_snort.unwrap()).num_seconds();
-                                format!("Brightdust is still settling! Please wait {} more seconds before you can snort again.", remaining)
+                                (
+                                    format!("Brightdust is still settling! Please wait {} more seconds before you can snort again.", remaining),
+                                    false // On cooldown, don't attach meme
+                                )
                             };
 
-                            // Send response with meme if available
+                            // Send response with meme only if we incremented the counter
                             let mut response_message = CreateInteractionResponseMessage::new()
                                 .content(response_content.clone());
                             
-                            // Add random meme if available
-                            if let Some(meme_path) = Self::get_random_snort_meme().await {
-                                if let Ok(file_contents) = tokio::fs::read(&meme_path).await {
-                                    let filename = meme_path
-                                        .file_name()
-                                        .and_then(|name| name.to_str())
-                                        .unwrap_or("snort_meme.png");
-                                    
-                                    let attachment = CreateAttachment::bytes(file_contents, filename);
-                                    response_message = response_message.add_file(attachment);
-                                    
-                                    info!("Attached snort meme: {}", meme_path.display());
+                            // Make cooldown messages ephemeral (only visible to the user)
+                            if !should_attach_meme {
+                                response_message = response_message.ephemeral(true);
+                            }
+                            
+                            // Add random meme only if we should (counter was incremented)
+                            if should_attach_meme {
+                                if let Some(meme_path) = Self::get_random_snort_meme().await {
+                                    if let Ok(file_contents) = tokio::fs::read(&meme_path).await {
+                                        let filename = meme_path
+                                            .file_name()
+                                            .and_then(|name| name.to_str())
+                                            .unwrap_or("snort_meme.png");
+                                        
+                                        let attachment = CreateAttachment::bytes(file_contents, filename);
+                                        response_message = response_message.add_file(attachment);
+                                        
+                                        info!("Attached snort meme: {}", meme_path.display());
+                                    }
                                 }
                             }
                             

@@ -21,10 +21,13 @@ All notable changes to Sentinel Discord Bot will be documented in this file.
   - Numeric format for larger numbers
 
 - **Snort meme attachments** - The `/snort` command now attaches a random meme image
+  - Only attaches memes when successfully incrementing the counter (not on cooldown)
+  - Cooldown messages are ephemeral (only visible to the user)
+  - Successful snorts with memes are visible to everyone
   - Reads images from `memes/snort` directory
   - Supports jpg, png, gif, and webp formats
   - Directory created automatically on startup
-  - Memes directory excluded from version control
+  - Memes directory excluded from version control (except README.md)
 
 ### Changed
 - **Migrated all commands to Discord slash commands** - Modern Discord integration
