@@ -282,11 +282,9 @@ impl Database {
         .await?;
 
         // Initialize snort counter if it doesn't exist
-        sqlx::query(
-            "INSERT IGNORE INTO snort_counter (id, count) VALUES (1, 0)"
-        )
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("INSERT IGNORE INTO snort_counter (id, count) VALUES (1, 0)")
+            .execute(&self.pool)
+            .await?;
 
         // Add default snort cooldown setting (in seconds)
         sqlx::query(
@@ -435,9 +433,13 @@ impl Database {
         Ok(result > 0)
     }
 
-    pub async fn search_users(&self, query: &str, limit: u64) -> Result<Vec<(u64, String, Option<String>, Option<String>)>> {
+    pub async fn search_users(
+        &self,
+        query: &str,
+        limit: u64,
+    ) -> Result<Vec<(u64, String, Option<String>, Option<String>)>> {
         let search_pattern = format!("%{}%", query);
-        
+
         let results = sqlx::query!(
             r#"
             SELECT DISTINCT discord_user_id, username, global_handle, nickname
@@ -454,8 +456,12 @@ impl Database {
                 last_seen DESC
             LIMIT ?
             "#,
-            search_pattern, search_pattern, search_pattern,
-            query, query, query,
+            search_pattern,
+            search_pattern,
+            search_pattern,
+            query,
+            query,
+            query,
             limit
         )
         .fetch_all(&self.pool)
@@ -463,12 +469,14 @@ impl Database {
 
         Ok(results
             .into_iter()
-            .map(|r| (
-                r.discord_user_id as u64, 
-                r.username.unwrap_or_else(|| "Unknown".to_string()), 
-                r.global_handle, 
-                r.nickname
-            ))
+            .map(|r| {
+                (
+                    r.discord_user_id as u64,
+                    r.username.unwrap_or_else(|| "Unknown".to_string()),
+                    r.global_handle,
+                    r.nickname,
+                )
+            })
             .collect())
     }
 
@@ -737,25 +745,23 @@ impl Database {
         // Update user's last snort time
         sqlx::query(
             "INSERT INTO user_snort_cooldowns (user_id, last_snort_time) VALUES (?, NOW()) 
-             ON DUPLICATE KEY UPDATE last_snort_time = NOW()"
+             ON DUPLICATE KEY UPDATE last_snort_time = NOW()",
         )
         .bind(user_id as i64)
         .execute(&self.pool)
         .await?;
 
         // Get the new count
-        let count = sqlx::query_scalar::<_, i64>(
-            "SELECT count FROM snort_counter WHERE id = 1"
-        )
-        .fetch_one(&self.pool)
-        .await?;
+        let count = sqlx::query_scalar::<_, i64>("SELECT count FROM snort_counter WHERE id = 1")
+            .fetch_one(&self.pool)
+            .await?;
 
         Ok(count)
     }
 
     pub async fn get_user_last_snort_time(&self, user_id: u64) -> Result<Option<DateTime<Utc>>> {
         let result = sqlx::query_scalar::<_, DateTime<Utc>>(
-            "SELECT last_snort_time FROM user_snort_cooldowns WHERE user_id = ?"
+            "SELECT last_snort_time FROM user_snort_cooldowns WHERE user_id = ?",
         )
         .bind(user_id as i64)
         .fetch_optional(&self.pool)
@@ -765,7 +771,9 @@ impl Database {
     }
 
     pub async fn get_snort_cooldown_seconds(&self) -> Result<u64> {
-        let result = self.get_setting("snort_cooldown_seconds").await?
+        let result = self
+            .get_setting("snort_cooldown_seconds")
+            .await?
             .unwrap_or_else(|| "30".to_string())
             .parse::<u64>()
             .unwrap_or(30);

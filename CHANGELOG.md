@@ -14,6 +14,12 @@ All notable changes to Sentinel Discord Bot will be documented in this file.
   - Works with `/kick`, `/ban`, `/timeout`, and `/whitelist` commands
   - Returns up to 25 matching users from the database
 
+### Improved
+- **Human-readable snort counter** - The `/snort` command now displays counts in natural language
+  - "once", "twice", "thrice" for 1-3 times
+  - Written numbers like "four times", "five times" up to twenty
+  - Numeric format for larger numbers
+
 ### Changed
 - **Migrated all commands to Discord slash commands** - Modern Discord integration
   - `/help` - Shows available commands with permission-based visibility

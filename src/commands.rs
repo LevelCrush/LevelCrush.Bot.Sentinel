@@ -1,8 +1,6 @@
 use crate::db::Database;
 use anyhow::Result;
-use serenity::all::{
-    Colour, Context, CreateEmbed, CreateMessage, EditMember, Message, UserId,
-};
+use serenity::all::{Colour, Context, CreateEmbed, CreateMessage, EditMember, Message, UserId};
 use tracing::{error, info};
 
 pub struct CommandHandler {
@@ -89,7 +87,11 @@ impl CommandHandler {
         Ok(())
     }
 
-    pub async fn find_user_by_handle(&self, ctx: &Context, handle: &str) -> Option<(UserId, String)> {
+    pub async fn find_user_by_handle(
+        &self,
+        ctx: &Context,
+        handle: &str,
+    ) -> Option<(UserId, String)> {
         // Remove @ prefix if present
         let handle = handle.strip_prefix('@').unwrap_or(handle);
 
@@ -193,11 +195,7 @@ impl CommandHandler {
         let mut help_embed = CreateEmbed::new()
             .title("Sentinel Help")
             .description("Available commands (DM only):")
-            .field(
-                "/help",
-                "Show this command list",
-                false,
-            )
+            .field("/help", "Show this command list", false)
             .field(
                 "/kick <@user> [reason]",
                 "Kick a user from all guilds (whitelisted only)",
@@ -220,7 +218,12 @@ impl CommandHandler {
             );
 
         // Add whitelist command for super users
-        if self.db.is_super_user(msg.author.id.get()).await.unwrap_or(false) {
+        if self
+            .db
+            .is_super_user(msg.author.id.get())
+            .await
+            .unwrap_or(false)
+        {
             help_embed = help_embed.field(
                 "/whitelist <add|remove> <@user>",
                 "Manage command whitelist (super users only)",
@@ -785,7 +788,7 @@ impl CommandHandler {
         }
 
         let action = args[0].to_lowercase();
-        
+
         match action.as_str() {
             "add" => {
                 if args.len() < 2 {
@@ -801,7 +804,8 @@ impl CommandHandler {
                 }
 
                 let user_handle = args[1];
-                if let Some((user_id, user_tag)) = self.find_user_by_handle(ctx, user_handle).await {
+                if let Some((user_id, user_tag)) = self.find_user_by_handle(ctx, user_handle).await
+                {
                     // Check if they're already whitelisted
                     if self.db.is_whitelisted(user_id.get()).await? {
                         self.send_response(
@@ -818,7 +822,7 @@ impl CommandHandler {
                             "[WHITELIST] {} added {} ({}) to whitelist",
                             msg.author.id, user_tag, user_id
                         );
-                        
+
                         self.send_response(
                             ctx,
                             msg,
@@ -856,13 +860,17 @@ impl CommandHandler {
                 }
 
                 let user_handle = args[1];
-                if let Some((user_id, user_tag)) = self.find_user_by_handle(ctx, user_handle).await {
+                if let Some((user_id, user_tag)) = self.find_user_by_handle(ctx, user_handle).await
+                {
                     // Don't allow removing super users
                     if self.db.is_super_user(user_id.get()).await? {
                         self.send_response(
                             ctx,
                             msg,
-                            format!("Cannot remove {} from whitelist as they are a super user.", user_tag),
+                            format!(
+                                "Cannot remove {} from whitelist as they are a super user.",
+                                user_tag
+                            ),
                             "/whitelist",
                             false,
                         )
@@ -873,7 +881,7 @@ impl CommandHandler {
                             "[WHITELIST] {} removed {} ({}) from whitelist",
                             msg.author.id, user_tag, user_id
                         );
-                        
+
                         self.send_response(
                             ctx,
                             msg,
