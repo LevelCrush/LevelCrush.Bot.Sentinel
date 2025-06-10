@@ -1,7 +1,7 @@
 use crate::db::Database;
 use anyhow::Result;
 use serenity::all::{
-    Colour, Context, CreateEmbed, CreateMessage, EditMember, GuildId, Message, Timestamp, UserId,
+    Colour, Context, CreateEmbed, CreateMessage, EditMember, Message, Timestamp, UserId,
 };
 use tracing::info;
 
@@ -45,18 +45,18 @@ impl CommandHandler {
                     false,
                 )
                 .field(
-                    "/kick <user_id> <guild_id> [reason]",
-                    "Kick a user (whitelisted only)",
+                    "/kick <user_id> [reason]",
+                    "Kick a user from all guilds (whitelisted only)",
                     false,
                 )
                 .field(
-                    "/ban <user_id> <guild_id> [reason]",
-                    "Ban a user (whitelisted only)",
+                    "/ban <user_id> [reason]",
+                    "Ban a user from all guilds (whitelisted only)",
                     false,
                 )
                 .field(
-                    "/timeout <user_id> <guild_id> <duration_minutes> [reason]",
-                    "Timeout a user (whitelisted only)",
+                    "/timeout <user_id> <duration_minutes> [reason]",
+                    "Timeout a user in all guilds (whitelisted only)",
                     false,
                 )
                 .field(
@@ -126,66 +126,93 @@ impl CommandHandler {
             return Ok(());
         }
 
-        if args.len() < 2 {
+        if args.is_empty() {
             msg.author
                 .direct_message(
                     &ctx.http,
-                    CreateMessage::new().content("Usage: /kick <user_id> <guild_id> [reason]"),
+                    CreateMessage::new().content("Usage: /kick <user_id> [reason]"),
                 )
                 .await?;
             return Ok(());
         }
 
         let user_id = args[0].parse::<u64>().ok().map(UserId::new);
-        let guild_id = args[1].parse::<u64>().ok().map(GuildId::new);
-        let reason = if args.len() > 2 {
-            Some(args[2..].join(" "))
+        let reason = if args.len() > 1 {
+            Some(args[1..].join(" "))
         } else {
             None
         };
 
-        if let (Some(user_id), Some(guild_id)) = (user_id, guild_id) {
-            let result = if let Some(reason) = reason.as_deref() {
-                guild_id.kick_with_reason(&ctx.http, user_id, reason).await
-            } else {
-                guild_id.kick(&ctx.http, user_id).await
-            };
+        if let Some(user_id) = user_id {
+            let guilds = ctx.cache.guilds();
+            let mut kicked_from = Vec::new();
+            let mut failed_guilds = Vec::new();
 
-            match result {
-                Ok(_) => {
-                    info!(
-                        "[MOD ACTION] {} kicked user {} from guild {} - reason: {}",
-                        msg.author.id,
-                        user_id,
-                        guild_id,
-                        reason.as_deref().unwrap_or("none")
-                    );
+            for guild_id in guilds {
+                // Check if the user is in this guild
+                let is_member = ctx
+                    .cache
+                    .guild(guild_id)
+                    .map(|guild| guild.members.contains_key(&user_id))
+                    .unwrap_or(false);
 
-                    msg.author
-                        .direct_message(
-                            &ctx.http,
-                            CreateMessage::new().content(format!(
-                                "Successfully kicked user {} from guild {}",
-                                user_id, guild_id
-                            )),
-                        )
-                        .await?;
-                }
-                Err(e) => {
-                    msg.author
-                        .direct_message(
-                            &ctx.http,
-                            CreateMessage::new().content(format!("Failed to kick user: {}", e)),
-                        )
-                        .await?;
+                if is_member {
+                    let result = if let Some(reason) = reason.as_deref() {
+                        guild_id.kick_with_reason(&ctx.http, user_id, reason).await
+                    } else {
+                        guild_id.kick(&ctx.http, user_id).await
+                    };
+
+                    match result {
+                        Ok(_) => {
+                            info!(
+                                "[MOD ACTION] {} kicked user {} from guild {} - reason: {}",
+                                msg.author.id,
+                                user_id,
+                                guild_id,
+                                reason.as_deref().unwrap_or("none")
+                            );
+                            kicked_from.push(guild_id);
+                        }
+                        Err(e) => {
+                            failed_guilds.push((guild_id, e.to_string()));
+                        }
+                    }
                 }
             }
+
+            let mut response = String::new();
+            if !kicked_from.is_empty() {
+                response.push_str(&format!(
+                    "Successfully kicked user {} from {} guild(s): {}\n",
+                    user_id,
+                    kicked_from.len(),
+                    kicked_from
+                        .iter()
+                        .map(|g| g.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            if !failed_guilds.is_empty() {
+                response.push_str(&format!(
+                    "Failed to kick from {} guild(s):\n",
+                    failed_guilds.len()
+                ));
+                for (guild_id, error) in &failed_guilds {
+                    response.push_str(&format!("- Guild {}: {}\n", guild_id, error));
+                }
+            }
+            if kicked_from.is_empty() && failed_guilds.is_empty() {
+                response = format!("User {} was not found in any guilds.", user_id);
+            }
+
+            msg.author
+                .direct_message(&ctx.http, CreateMessage::new().content(response))
+                .await?;
         } else {
             msg.author
-                .direct_message(
-                    &ctx.http,
-                    CreateMessage::new().content("Invalid user ID or guild ID"),
-                )
+                .direct_message(&ctx.http, CreateMessage::new().content("Invalid user ID"))
                 .await?;
         }
 
@@ -203,68 +230,86 @@ impl CommandHandler {
             return Ok(());
         }
 
-        if args.len() < 2 {
+        if args.is_empty() {
             msg.author
                 .direct_message(
                     &ctx.http,
-                    CreateMessage::new().content("Usage: /ban <user_id> <guild_id> [reason]"),
+                    CreateMessage::new().content("Usage: /ban <user_id> [reason]"),
                 )
                 .await?;
             return Ok(());
         }
 
         let user_id = args[0].parse::<u64>().ok().map(UserId::new);
-        let guild_id = args[1].parse::<u64>().ok().map(GuildId::new);
-        let reason = if args.len() > 2 {
-            Some(args[2..].join(" "))
+        let reason = if args.len() > 1 {
+            Some(args[1..].join(" "))
         } else {
             None
         };
 
-        if let (Some(user_id), Some(guild_id)) = (user_id, guild_id) {
-            let result = if let Some(reason) = reason.as_deref() {
-                guild_id
-                    .ban_with_reason(&ctx.http, user_id, 0, reason)
-                    .await
-            } else {
-                guild_id.ban(&ctx.http, user_id, 0).await
-            };
+        if let Some(user_id) = user_id {
+            let guilds = ctx.cache.guilds();
+            let mut banned_from = Vec::new();
+            let mut failed_guilds = Vec::new();
 
-            match result {
-                Ok(_) => {
-                    info!(
-                        "[MOD ACTION] {} banned user {} from guild {} - reason: {}",
-                        msg.author.id,
-                        user_id,
-                        guild_id,
-                        reason.as_deref().unwrap_or("none")
-                    );
+            for guild_id in guilds {
+                let result = if let Some(reason) = reason.as_deref() {
+                    guild_id
+                        .ban_with_reason(&ctx.http, user_id, 0, reason)
+                        .await
+                } else {
+                    guild_id.ban(&ctx.http, user_id, 0).await
+                };
 
-                    msg.author
-                        .direct_message(
-                            &ctx.http,
-                            CreateMessage::new().content(format!(
-                                "Successfully banned user {} from guild {}",
-                                user_id, guild_id
-                            )),
-                        )
-                        .await?;
-                }
-                Err(e) => {
-                    msg.author
-                        .direct_message(
-                            &ctx.http,
-                            CreateMessage::new().content(format!("Failed to ban user: {}", e)),
-                        )
-                        .await?;
+                match result {
+                    Ok(_) => {
+                        info!(
+                            "[MOD ACTION] {} banned user {} from guild {} - reason: {}",
+                            msg.author.id,
+                            user_id,
+                            guild_id,
+                            reason.as_deref().unwrap_or("none")
+                        );
+                        banned_from.push(guild_id);
+                    }
+                    Err(e) => {
+                        failed_guilds.push((guild_id, e.to_string()));
+                    }
                 }
             }
+
+            let mut response = String::new();
+            if !banned_from.is_empty() {
+                response.push_str(&format!(
+                    "Successfully banned user {} from {} guild(s): {}\n",
+                    user_id,
+                    banned_from.len(),
+                    banned_from
+                        .iter()
+                        .map(|g| g.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            if !failed_guilds.is_empty() {
+                response.push_str(&format!(
+                    "Failed to ban from {} guild(s):\n",
+                    failed_guilds.len()
+                ));
+                for (guild_id, error) in &failed_guilds {
+                    response.push_str(&format!("- Guild {}: {}\n", guild_id, error));
+                }
+            }
+            if banned_from.is_empty() && failed_guilds.is_empty() {
+                response = "No guilds found to ban the user from.".to_string();
+            }
+
+            msg.author
+                .direct_message(&ctx.http, CreateMessage::new().content(response))
+                .await?;
         } else {
             msg.author
-                .direct_message(
-                    &ctx.http,
-                    CreateMessage::new().content("Invalid user ID or guild ID"),
-                )
+                .direct_message(&ctx.http, CreateMessage::new().content("Invalid user ID"))
                 .await?;
         }
 
@@ -282,30 +327,26 @@ impl CommandHandler {
             return Ok(());
         }
 
-        if args.len() < 3 {
+        if args.len() < 2 {
             msg.author
                 .direct_message(
                     &ctx.http,
-                    CreateMessage::new().content(
-                        "Usage: /timeout <user_id> <guild_id> <duration_minutes> [reason]",
-                    ),
+                    CreateMessage::new()
+                        .content("Usage: /timeout <user_id> <duration_minutes> [reason]"),
                 )
                 .await?;
             return Ok(());
         }
 
         let user_id = args[0].parse::<u64>().ok().map(UserId::new);
-        let guild_id = args[1].parse::<u64>().ok().map(GuildId::new);
-        let duration_minutes = args[2].parse::<u64>().ok();
-        let _reason = if args.len() > 3 {
-            Some(args[3..].join(" "))
+        let duration_minutes = args[1].parse::<u64>().ok();
+        let reason = if args.len() > 2 {
+            Some(args[2..].join(" "))
         } else {
             None
         };
 
-        if let (Some(user_id), Some(guild_id), Some(duration_minutes)) =
-            (user_id, guild_id, duration_minutes)
-        {
+        if let (Some(user_id), Some(duration_minutes)) = (user_id, duration_minutes) {
             // Discord's maximum timeout duration is 28 days
             const MAX_TIMEOUT_MINUTES: u64 = 28 * 24 * 60;
 
@@ -336,42 +377,75 @@ impl CommandHandler {
                 chrono::Utc::now() + chrono::Duration::minutes(duration_minutes as i64);
             let timeout_str = timeout_until.to_rfc3339();
 
-            let edit_member = EditMember::new().disable_communication_until(timeout_str);
-            match guild_id.edit_member(&ctx.http, user_id, edit_member).await {
-                Ok(_) => {
-                    info!(
-                        "[MOD ACTION] {} timed out user {} in guild {} for {} minutes - reason: {}",
-                        msg.author.id,
-                        user_id,
-                        guild_id,
-                        duration_minutes,
-                        _reason.as_deref().unwrap_or("none")
-                    );
+            let guilds = ctx.cache.guilds();
+            let mut timed_out_from = Vec::new();
+            let mut failed_guilds = Vec::new();
 
-                    msg.author
-                        .direct_message(
-                            &ctx.http,
-                            CreateMessage::new().content(format!(
-                                "Successfully timed out user {} for {} minutes",
-                                user_id, duration_minutes
-                            )),
-                        )
-                        .await?;
-                }
-                Err(e) => {
-                    msg.author
-                        .direct_message(
-                            &ctx.http,
-                            CreateMessage::new().content(format!("Failed to timeout user: {}", e)),
-                        )
-                        .await?;
+            for guild_id in guilds {
+                // Check if the user is in this guild
+                let is_member = ctx
+                    .cache
+                    .guild(guild_id)
+                    .map(|guild| guild.members.contains_key(&user_id))
+                    .unwrap_or(false);
+
+                if is_member {
+                    let edit_member =
+                        EditMember::new().disable_communication_until(timeout_str.clone());
+                    match guild_id.edit_member(&ctx.http, user_id, edit_member).await {
+                        Ok(_) => {
+                            info!(
+                                "[MOD ACTION] {} timed out user {} in guild {} for {} minutes - reason: {}",
+                                msg.author.id,
+                                user_id,
+                                guild_id,
+                                duration_minutes,
+                                reason.as_deref().unwrap_or("none")
+                            );
+                            timed_out_from.push(guild_id);
+                        }
+                        Err(e) => {
+                            failed_guilds.push((guild_id, e.to_string()));
+                        }
+                    }
                 }
             }
+
+            let mut response = String::new();
+            if !timed_out_from.is_empty() {
+                response.push_str(&format!(
+                    "Successfully timed out user {} for {} minutes in {} guild(s): {}\n",
+                    user_id,
+                    duration_minutes,
+                    timed_out_from.len(),
+                    timed_out_from
+                        .iter()
+                        .map(|g| g.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ));
+            }
+            if !failed_guilds.is_empty() {
+                response.push_str(&format!(
+                    "Failed to timeout in {} guild(s):\n",
+                    failed_guilds.len()
+                ));
+                for (guild_id, error) in &failed_guilds {
+                    response.push_str(&format!("- Guild {}: {}\n", guild_id, error));
+                }
+            }
+            if timed_out_from.is_empty() && failed_guilds.is_empty() {
+                response = format!("User {} was not found in any guilds.", user_id);
+            }
+
+            msg.author
+                .direct_message(&ctx.http, CreateMessage::new().content(response))
+                .await?;
         } else {
             msg.author
                 .direct_message(
                     &ctx.http,
-                    CreateMessage::new().content("Invalid user ID, guild ID, or duration"),
+                    CreateMessage::new().content("Invalid user ID or duration"),
                 )
                 .await?;
         }

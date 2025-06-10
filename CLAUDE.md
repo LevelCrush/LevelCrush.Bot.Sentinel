@@ -148,12 +148,18 @@ Only accepted via **Direct Messages** to preserve anonymity:
 
 | Command      | Description                             | Access           |
 |--------------|-----------------------------------------|------------------|
-| `/kick`      | Removes user from the server            | Whitelisted only |
-| `/ban`       | Bans user from the server               | Whitelisted only |
-| `/timeout`   | Temporarily mutes user                  | Whitelisted only |
+| `/kick`      | Removes user from all connected servers | Whitelisted only |
+| `/ban`       | Bans user from all connected servers    | Whitelisted only |
+| `/timeout`   | Temporarily mutes user in all servers   | Whitelisted only |
 | `/help`      | Sends mod alert (sender is attached)    | Anyone           |
 
 User IDs are validated against the `command_whitelist` table.
+
+**Cross-Guild Moderation**: All moderation commands now work across ALL guilds where the bot is present. When a moderator issues a command, the bot will:
+1. Iterate through all connected guilds
+2. Check if the target user is a member of each guild (for kick/timeout)
+3. Apply the moderation action where applicable
+4. Report back with a summary of successes and failures per guild
 
 ---
 

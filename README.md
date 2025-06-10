@@ -45,10 +45,12 @@ A full-spectrum Discord moderation and logging bot designed for transparency and
 Send these commands via Direct Message to the bot:
 
 - `/help` - Show command list or send mod alert
-- `/kick <user_id> <guild_id> [reason]` - Kick a user
-- `/ban <user_id> <guild_id> [reason]` - Ban a user  
-- `/timeout <user_id> <guild_id> <minutes> [reason]` - Timeout a user (max 28 days)
+- `/kick <user_id> [reason]` - Kick a user from all guilds
+- `/ban <user_id> [reason]` - Ban a user from all guilds
+- `/timeout <user_id> <minutes> [reason]` - Timeout a user in all guilds (max 28 days)
 - `/cache [on|off]` - Toggle media caching on or off (whitelisted only)
+
+**Note**: Moderation commands now work across ALL guilds where the bot is present. The bot will attempt the action on every guild and report back the results.
 
 ## Whitelist Management
 
