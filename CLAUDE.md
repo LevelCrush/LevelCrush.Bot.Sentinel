@@ -312,6 +312,37 @@ For Discord bots, consider:
 
 ---
 
+## Cross-Compilation for Raspberry Pi 5
+
+The project includes support for cross-compiling to ARM64 (aarch64) architecture:
+
+### Setup
+- `.cargo/config.toml`: Contains linker configuration for aarch64 targets
+- `build-pi5.sh`: Native cross-compilation script (requires gcc-aarch64-linux-gnu)
+- `build-pi5-docker.sh`: Docker-based build (no tools installation required)
+
+### Building
+```bash
+# Method 1: Native tools
+./build-pi5.sh
+
+# Method 2: Docker
+./build-pi5-docker.sh
+```
+
+### Deployment
+The scripts produce a binary at:
+- Native: `target/aarch64-unknown-linux-gnu/release/sentinel`
+- Docker: `./sentinel-pi5`
+
+Deploy with:
+```bash
+scp <binary> pi@<ip>:~/sentinel
+scp .env pi@<ip>:~/
+```
+
+---
+
 ## Next Development Steps
 
 - Implement command routing with `serenity::framework::standard`

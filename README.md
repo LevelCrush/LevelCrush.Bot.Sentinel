@@ -122,3 +122,88 @@ cargo fmt       # Format code
 cargo clippy    # Run linter
 cargo test      # Run tests
 ```
+
+## Cross-Compilation for Raspberry Pi 5
+
+The Raspberry Pi 5 uses ARM64 (aarch64) architecture. We provide two methods for cross-compilation:
+
+### Method 1: Using Native Cross-Compilation Tools
+
+1. **Install cross-compilation tools** (Ubuntu/Debian):
+   ```bash
+   sudo apt-get update
+   sudo apt-get install gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+   ```
+
+2. **Add the Rust target**:
+   ```bash
+   rustup target add aarch64-unknown-linux-gnu
+   ```
+
+3. **Build using the provided script**:
+   ```bash
+   ./build-pi5.sh
+   ```
+
+### Method 2: Using Docker (No tools installation required)
+
+If you have Docker installed, you can build without installing cross-compilation tools:
+
+```bash
+./build-pi5-docker.sh
+```
+
+### Deploying to Raspberry Pi 5
+
+After building, deploy the binary:
+
+```bash
+# Copy the binary and config
+scp target/aarch64-unknown-linux-gnu/release/sentinel pi@<your-pi-ip>:~/
+# Or if using Docker build:
+scp sentinel-pi5 pi@<your-pi-ip>:~/sentinel
+
+# Copy the environment file
+scp .env pi@<your-pi-ip>:~/
+
+# SSH to your Pi
+ssh pi@<your-pi-ip>
+
+# Make executable and run
+chmod +x sentinel
+./sentinel
+```
+
+### Running as a Service on Raspberry Pi
+
+Create a systemd service on your Pi:
+
+```bash
+sudo nano /etc/systemd/system/sentinel.service
+```
+
+Add the following content:
+```ini
+[Unit]
+Description=Sentinel Discord Bot
+After=network.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi
+ExecStart=/home/pi/sentinel
+Restart=on-failure
+RestartSec=10
+Environment="RUST_LOG=info"
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start the service:
+```bash
+sudo systemctl enable sentinel
+sudo systemctl start sentinel
+sudo systemctl status sentinel
+```

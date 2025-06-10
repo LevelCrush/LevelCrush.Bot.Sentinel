@@ -5,3 +5,5 @@ Cargo.lock
 /media_cache
 *.log
 /logs
+sentinel-pi5
+Dockerfile.pi5
