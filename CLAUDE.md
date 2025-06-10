@@ -197,6 +197,8 @@ All commands are implemented as Discord slash commands:
 | `/whitelist <action> <user>`     | Manage command whitelist (add/remove)   | Super users only |
 | `/snort`                         | Snort brightdust! Tracks global count   | Anyone           |
 
+**User Autocomplete**: All commands that target users (`/kick`, `/ban`, `/timeout`, `/whitelist`) provide autocomplete suggestions from the database. Start typing a username, handle, or nickname to see matching users.
+
 ### Legacy DM Support
 
 The bot still processes DM commands for backward compatibility, but slash commands are the preferred method.

@@ -501,6 +501,49 @@ impl Handler {
             }
         }
     }
+
+    async fn handle_autocomplete(&self, ctx: &Context, autocomplete: serenity::all::CommandInteraction) {
+        // Find which option is being autocompleted by checking the resolved data
+        let input = autocomplete.data.options.iter()
+            .find(|opt| opt.name == "user")
+            .and_then(|opt| opt.value.as_str())
+            .unwrap_or("");
+        
+        // Search users in database
+        let users = match self.db.search_users(input, 25).await {
+            Ok(users) => users,
+            Err(e) => {
+                error!("Failed to search users for autocomplete: {}", e);
+                vec![]
+            }
+        };
+        
+        // Create autocomplete choices
+        let choices: Vec<serenity::all::AutocompleteChoice> = users.iter()
+            .map(|(_user_id, username, global_handle, nickname)| {
+                // Build display name
+                let mut display = username.clone();
+                if let Some(handle) = global_handle {
+                    display = format!("@{}", handle);
+                }
+                if let Some(nick) = nickname {
+                    display = format!("{} ({})", display, nick);
+                }
+                
+                serenity::all::AutocompleteChoice::new(display.clone(), display)
+            })
+            .collect();
+        
+        // Send autocomplete response
+        let response = CreateInteractionResponse::Autocomplete(
+            serenity::all::CreateAutocompleteResponse::new()
+                .set_choices(choices)
+        );
+        
+        if let Err(e) = autocomplete.create_response(&ctx.http, response).await {
+            error!("Failed to send autocomplete response: {}", e);
+        }
+    }
 }
 
 #[async_trait]
@@ -839,6 +882,7 @@ impl EventHandler for Handler {
                         "Username, @handle, or server nickname"
                     )
                     .required(true)
+                    .set_autocomplete(true)
                 )
                 .add_option(
                     serenity::all::CreateCommandOption::new(
@@ -867,6 +911,7 @@ impl EventHandler for Handler {
                         "Username, @handle, or server nickname"
                     )
                     .required(true)
+                    .set_autocomplete(true)
                 )
                 .add_option(
                     serenity::all::CreateCommandOption::new(
@@ -895,6 +940,7 @@ impl EventHandler for Handler {
                         "Username, @handle, or server nickname"
                     )
                     .required(true)
+                    .set_autocomplete(true)
                 )
                 .add_option(
                     serenity::all::CreateCommandOption::new(
@@ -966,6 +1012,7 @@ impl EventHandler for Handler {
                         "Username, @handle, or server nickname"
                     )
                     .required(true)
+                    .set_autocomplete(true)
                 ),
         )
         .await
@@ -983,27 +1030,28 @@ impl EventHandler for Handler {
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
-        if let Interaction::Command(command) = interaction {
-            match command.data.name.as_str() {
-                "help" => {
-                    self.handle_help_slash(&ctx, &command).await;
-                }
-                "kick" => {
-                    self.handle_kick_slash(&ctx, &command).await;
-                }
-                "ban" => {
-                    self.handle_ban_slash(&ctx, &command).await;
-                }
-                "timeout" => {
-                    self.handle_timeout_slash(&ctx, &command).await;
-                }
-                "cache" => {
-                    self.handle_cache_slash(&ctx, &command).await;
-                }
-                "whitelist" => {
-                    self.handle_whitelist_slash(&ctx, &command).await;
-                }
-                "snort" => {
+        match interaction {
+            Interaction::Command(command) => {
+                match command.data.name.as_str() {
+                    "help" => {
+                        self.handle_help_slash(&ctx, &command).await;
+                    }
+                    "kick" => {
+                        self.handle_kick_slash(&ctx, &command).await;
+                    }
+                    "ban" => {
+                        self.handle_ban_slash(&ctx, &command).await;
+                    }
+                    "timeout" => {
+                        self.handle_timeout_slash(&ctx, &command).await;
+                    }
+                    "cache" => {
+                        self.handle_cache_slash(&ctx, &command).await;
+                    }
+                    "whitelist" => {
+                        self.handle_whitelist_slash(&ctx, &command).await;
+                    }
+                    "snort" => {
                     if let Some(guild_id) = command.guild_id {
                         // Check cooldown
                         let cooldown_seconds = self.db.get_snort_cooldown_seconds().await.unwrap_or(30);
@@ -1068,13 +1116,19 @@ impl EventHandler for Handler {
                             error!("Failed to respond to /snort command: {}", e);
                         }
                     }
-                }
-                _ => {
-                    error!("Unknown slash command: {}", command.data.name);
+                    }
+                    _ => {
+                        error!("Unknown slash command: {}", command.data.name);
+                    }
                 }
             }
+            Interaction::Autocomplete(autocomplete) => {
+                self.handle_autocomplete(&ctx, autocomplete).await;
+            }
+            _ => {}
         }
     }
+
 
     async fn presence_update(&self, ctx: Context, new_data: Presence) {
         if let Some(guild_id) = new_data.guild_id {

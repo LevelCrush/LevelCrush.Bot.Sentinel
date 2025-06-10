@@ -422,6 +422,43 @@ impl Database {
         Ok(result > 0)
     }
 
+    pub async fn search_users(&self, query: &str, limit: u64) -> Result<Vec<(u64, String, Option<String>, Option<String>)>> {
+        let search_pattern = format!("%{}%", query);
+        
+        let results = sqlx::query!(
+            r#"
+            SELECT DISTINCT discord_user_id, username, global_handle, nickname
+            FROM users
+            WHERE username LIKE ? 
+               OR global_handle LIKE ?
+               OR nickname LIKE ?
+            ORDER BY 
+                CASE 
+                    WHEN username LIKE ? THEN 1
+                    WHEN global_handle LIKE ? THEN 2
+                    WHEN nickname LIKE ? THEN 3
+                END,
+                last_seen DESC
+            LIMIT ?
+            "#,
+            search_pattern, search_pattern, search_pattern,
+            query, query, query,
+            limit
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(results
+            .into_iter()
+            .map(|r| (
+                r.discord_user_id as u64, 
+                r.username.unwrap_or_else(|| "Unknown".to_string()), 
+                r.global_handle, 
+                r.nickname
+            ))
+            .collect())
+    }
+
     pub async fn add_to_whitelist(&self, user_id: u64) -> Result<()> {
         sqlx::query("INSERT IGNORE INTO command_whitelist (discord_user_id) VALUES (?)")
             .bind(user_id as i64)
