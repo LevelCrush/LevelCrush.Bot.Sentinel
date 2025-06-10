@@ -89,7 +89,7 @@ impl CommandHandler {
         Ok(())
     }
 
-    async fn find_user_by_handle(&self, ctx: &Context, handle: &str) -> Option<(UserId, String)> {
+    pub async fn find_user_by_handle(&self, ctx: &Context, handle: &str) -> Option<(UserId, String)> {
         // Remove @ prefix if present
         let handle = handle.strip_prefix('@').unwrap_or(handle);
 

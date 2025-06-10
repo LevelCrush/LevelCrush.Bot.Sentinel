@@ -3,9 +3,10 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use serenity::all::{
-    ChannelType, Command, Context, CreateInteractionResponse, CreateInteractionResponseMessage,
-    EventHandler, GatewayIntents, Guild, GuildChannel, GuildId, GuildMemberUpdateEvent,
-    Interaction, Member, Message, Presence, Ready, User, VoiceState,
+    ChannelType, Colour, Command, Context, CreateEmbed, CreateInteractionResponse, 
+    CreateInteractionResponseMessage, EditMember, EventHandler, GatewayIntents, Guild, 
+    GuildChannel, GuildId, GuildMemberUpdateEvent, Interaction, Member, Message, 
+    Presence, Ready, User, VoiceState,
 };
 use serenity::async_trait;
 use serenity::client::Client;
@@ -33,6 +34,471 @@ impl Handler {
             db,
             command_handler,
             media_cache,
+        }
+    }
+
+    async fn handle_help_slash(&self, ctx: &Context, command: &serenity::all::CommandInteraction) {
+        let user_id = command.user.id.get();
+        let is_super_user = self.db.is_super_user(user_id).await.unwrap_or(false);
+        
+        let mut embed = CreateEmbed::new()
+            .title("Sentinel Help")
+            .description("Available slash commands:")
+            .field("/help", "Show this command list", false)
+            .field("/kick <user> [reason]", "Kick a user from all guilds (whitelisted only)", false)
+            .field("/ban <user> [reason]", "Ban a user from all guilds (whitelisted only)", false)
+            .field("/timeout <user> <duration> [reason]", "Timeout a user in all guilds (whitelisted only)", false)
+            .field("/cache [on|off|status]", "Toggle or check media caching (whitelisted only)", false)
+            .field("/snort", "Snort some brightdust!", false);
+        
+        if is_super_user {
+            embed = embed.field("/whitelist <add|remove> <user>", "Manage command whitelist (super users only)", false);
+        }
+        
+        let embed = embed.colour(Colour::BLUE);
+        
+        let response = CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .embed(embed)
+                .ephemeral(true)
+        );
+        
+        if let Err(e) = command.create_response(&ctx.http, response).await {
+            error!("Failed to respond to /help command: {}", e);
+        }
+        
+        self.db.log_bot_response(user_id, Some("/help"), "slash_command", "Help embed shown", true).await.ok();
+    }
+
+    async fn handle_kick_slash(&self, ctx: &Context, command: &serenity::all::CommandInteraction) {
+        let user_id = command.user.id.get();
+        
+        if !self.db.is_whitelisted(user_id).await.unwrap_or(false) {
+            let response = CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("You are not authorized to use this command.")
+                    .ephemeral(true)
+            );
+            command.create_response(&ctx.http, response).await.ok();
+            self.db.log_bot_response(user_id, Some("/kick"), "slash_command", "Unauthorized", false).await.ok();
+            return;
+        }
+        
+        let user_handle = command.data.options.iter()
+            .find(|opt| opt.name == "user")
+            .and_then(|opt| opt.value.as_str());
+        
+        let reason = command.data.options.iter()
+            .find(|opt| opt.name == "reason")
+            .and_then(|opt| opt.value.as_str());
+        
+        if let Some(user_handle) = user_handle {
+            if let Some((target_id, user_tag)) = self.command_handler.find_user_by_handle(ctx, user_handle).await {
+                let guilds = ctx.cache.guilds();
+                let mut kicked_from = Vec::new();
+                let mut failed_guilds = Vec::new();
+                
+                for guild_id in guilds {
+                    let is_member = ctx.cache.guild(guild_id)
+                        .map(|guild| guild.members.contains_key(&target_id))
+                        .unwrap_or(false);
+                    
+                    if is_member {
+                        let result = if let Some(reason) = reason {
+                            guild_id.kick_with_reason(&ctx.http, target_id, reason).await
+                        } else {
+                            guild_id.kick(&ctx.http, target_id).await
+                        };
+                        
+                        match result {
+                            Ok(_) => {
+                                let guild_name = ctx.cache.guild(guild_id)
+                                    .map(|g| g.name.clone())
+                                    .unwrap_or_else(|| "Unknown".to_string());
+                                
+                                info!("[MOD ACTION] {} kicked user {} ({}) from guild {} ({}) - reason: {}",
+                                    user_id, user_tag, target_id, guild_name, guild_id,
+                                    reason.unwrap_or("none"));
+                                kicked_from.push(guild_id);
+                            }
+                            Err(e) => {
+                                failed_guilds.push((guild_id, e.to_string()));
+                            }
+                        }
+                    }
+                }
+                
+                let mut response_content = String::new();
+                if !kicked_from.is_empty() {
+                    let guild_names: Vec<String> = kicked_from.iter()
+                        .map(|g| ctx.cache.guild(*g)
+                            .map(|guild| format!("{} ({})", guild.name, g))
+                            .unwrap_or_else(|| g.to_string()))
+                        .collect();
+                    
+                    response_content.push_str(&format!(
+                        "Successfully kicked user {} from {} guild(s): {}\\n",
+                        user_tag, kicked_from.len(), guild_names.join(", ")
+                    ));
+                }
+                if !failed_guilds.is_empty() {
+                    response_content.push_str(&format!("Failed to kick from {} guild(s):\\n", failed_guilds.len()));
+                    for (guild_id, error) in &failed_guilds {
+                        let guild_name = ctx.cache.guild(*guild_id)
+                            .map(|g| format!("{} ({})", g.name, guild_id))
+                            .unwrap_or_else(|| guild_id.to_string());
+                        response_content.push_str(&format!("- Guild {}: {}\\n", guild_name, error));
+                    }
+                }
+                if kicked_from.is_empty() && failed_guilds.is_empty() {
+                    response_content = format!("User {} was not found in any guilds.", user_tag);
+                }
+                
+                let response = CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content(response_content.clone())
+                        .ephemeral(true)
+                );
+                
+                command.create_response(&ctx.http, response).await.ok();
+                self.db.log_bot_response(user_id, Some("/kick"), "slash_command", &response_content, !kicked_from.is_empty()).await.ok();
+            } else {
+                let response = CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content(format!("User '{}' not found. Please use their username, @handle, or server nickname.", user_handle))
+                        .ephemeral(true)
+                );
+                command.create_response(&ctx.http, response).await.ok();
+                self.db.log_bot_response(user_id, Some("/kick"), "slash_command", "User not found", false).await.ok();
+            }
+        }
+    }
+
+    async fn handle_ban_slash(&self, ctx: &Context, command: &serenity::all::CommandInteraction) {
+        let user_id = command.user.id.get();
+        
+        if !self.db.is_whitelisted(user_id).await.unwrap_or(false) {
+            let response = CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("You are not authorized to use this command.")
+                    .ephemeral(true)
+            );
+            command.create_response(&ctx.http, response).await.ok();
+            self.db.log_bot_response(user_id, Some("/ban"), "slash_command", "Unauthorized", false).await.ok();
+            return;
+        }
+        
+        let user_handle = command.data.options.iter()
+            .find(|opt| opt.name == "user")
+            .and_then(|opt| opt.value.as_str());
+        
+        let reason = command.data.options.iter()
+            .find(|opt| opt.name == "reason")
+            .and_then(|opt| opt.value.as_str());
+        
+        if let Some(user_handle) = user_handle {
+            if let Some((target_id, user_tag)) = self.command_handler.find_user_by_handle(ctx, user_handle).await {
+                let guilds = ctx.cache.guilds();
+                let mut banned_from = Vec::new();
+                let mut failed_guilds = Vec::new();
+                
+                for guild_id in guilds {
+                    let result = if let Some(reason) = reason {
+                        guild_id.ban_with_reason(&ctx.http, target_id, 0, reason).await
+                    } else {
+                        guild_id.ban(&ctx.http, target_id, 0).await
+                    };
+                    
+                    match result {
+                        Ok(_) => {
+                            let guild_name = ctx.cache.guild(guild_id)
+                                .map(|g| g.name.clone())
+                                .unwrap_or_else(|| "Unknown".to_string());
+                            
+                            info!("[MOD ACTION] {} banned user {} ({}) from guild {} ({}) - reason: {}",
+                                user_id, user_tag, target_id, guild_name, guild_id,
+                                reason.unwrap_or("none"));
+                            banned_from.push(guild_id);
+                        }
+                        Err(e) => {
+                            failed_guilds.push((guild_id, e.to_string()));
+                        }
+                    }
+                }
+                
+                let mut response_content = String::new();
+                if !banned_from.is_empty() {
+                    let guild_names: Vec<String> = banned_from.iter()
+                        .map(|g| ctx.cache.guild(*g)
+                            .map(|guild| format!("{} ({})", guild.name, g))
+                            .unwrap_or_else(|| g.to_string()))
+                        .collect();
+                    
+                    response_content.push_str(&format!(
+                        "Successfully banned user {} from {} guild(s): {}\\n",
+                        user_tag, banned_from.len(), guild_names.join(", ")
+                    ));
+                }
+                if !failed_guilds.is_empty() {
+                    response_content.push_str(&format!("Failed to ban from {} guild(s):\\n", failed_guilds.len()));
+                    for (guild_id, error) in &failed_guilds {
+                        let guild_name = ctx.cache.guild(*guild_id)
+                            .map(|g| format!("{} ({})", g.name, guild_id))
+                            .unwrap_or_else(|| guild_id.to_string());
+                        response_content.push_str(&format!("- Guild {}: {}\\n", guild_name, error));
+                    }
+                }
+                if banned_from.is_empty() && failed_guilds.is_empty() {
+                    response_content = "No guilds found to ban the user from.".to_string();
+                }
+                
+                let response = CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content(response_content.clone())
+                        .ephemeral(true)
+                );
+                
+                command.create_response(&ctx.http, response).await.ok();
+                self.db.log_bot_response(user_id, Some("/ban"), "slash_command", &response_content, !banned_from.is_empty()).await.ok();
+            } else {
+                let response = CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content(format!("User '{}' not found. Please use their username, @handle, or server nickname.", user_handle))
+                        .ephemeral(true)
+                );
+                command.create_response(&ctx.http, response).await.ok();
+                self.db.log_bot_response(user_id, Some("/ban"), "slash_command", "User not found", false).await.ok();
+            }
+        }
+    }
+
+    async fn handle_timeout_slash(&self, ctx: &Context, command: &serenity::all::CommandInteraction) {
+        let user_id = command.user.id.get();
+        
+        if !self.db.is_whitelisted(user_id).await.unwrap_or(false) {
+            let response = CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("You are not authorized to use this command.")
+                    .ephemeral(true)
+            );
+            command.create_response(&ctx.http, response).await.ok();
+            self.db.log_bot_response(user_id, Some("/timeout"), "slash_command", "Unauthorized", false).await.ok();
+            return;
+        }
+        
+        let user_handle = command.data.options.iter()
+            .find(|opt| opt.name == "user")
+            .and_then(|opt| opt.value.as_str());
+        
+        let duration_minutes = command.data.options.iter()
+            .find(|opt| opt.name == "duration")
+            .and_then(|opt| opt.value.as_i64())
+            .map(|v| v as u64);
+        
+        let reason = command.data.options.iter()
+            .find(|opt| opt.name == "reason")
+            .and_then(|opt| opt.value.as_str());
+        
+        if let (Some(user_handle), Some(duration_minutes)) = (user_handle, duration_minutes) {
+            if let Some((target_id, user_tag)) = self.command_handler.find_user_by_handle(ctx, user_handle).await {
+                let timeout_until = chrono::Utc::now() + chrono::Duration::minutes(duration_minutes as i64);
+                let timeout_str = timeout_until.to_rfc3339();
+                
+                let guilds = ctx.cache.guilds();
+                let mut timed_out_from = Vec::new();
+                let mut failed_guilds = Vec::new();
+                
+                for guild_id in guilds {
+                    let is_member = ctx.cache.guild(guild_id)
+                        .map(|guild| guild.members.contains_key(&target_id))
+                        .unwrap_or(false);
+                    
+                    if is_member {
+                        let edit_member = EditMember::new().disable_communication_until(timeout_str.clone());
+                        match guild_id.edit_member(&ctx.http, target_id, edit_member).await {
+                            Ok(_) => {
+                                let guild_name = ctx.cache.guild(guild_id)
+                                    .map(|g| g.name.clone())
+                                    .unwrap_or_else(|| "Unknown".to_string());
+                                
+                                info!("[MOD ACTION] {} timed out user {} ({}) in guild {} ({}) for {} minutes - reason: {}",
+                                    user_id, user_tag, target_id, guild_name, guild_id, duration_minutes,
+                                    reason.unwrap_or("none"));
+                                timed_out_from.push(guild_id);
+                            }
+                            Err(e) => {
+                                failed_guilds.push((guild_id, e.to_string()));
+                            }
+                        }
+                    }
+                }
+                
+                let mut response_content = String::new();
+                if !timed_out_from.is_empty() {
+                    let guild_names: Vec<String> = timed_out_from.iter()
+                        .map(|g| ctx.cache.guild(*g)
+                            .map(|guild| format!("{} ({})", guild.name, g))
+                            .unwrap_or_else(|| g.to_string()))
+                        .collect();
+                    
+                    response_content.push_str(&format!(
+                        "Successfully timed out user {} for {} minutes in {} guild(s): {}\\n",
+                        user_tag, duration_minutes, timed_out_from.len(), guild_names.join(", ")
+                    ));
+                }
+                if !failed_guilds.is_empty() {
+                    response_content.push_str(&format!("Failed to timeout in {} guild(s):\\n", failed_guilds.len()));
+                    for (guild_id, error) in &failed_guilds {
+                        let guild_name = ctx.cache.guild(*guild_id)
+                            .map(|g| format!("{} ({})", g.name, guild_id))
+                            .unwrap_or_else(|| guild_id.to_string());
+                        response_content.push_str(&format!("- Guild {}: {}\\n", guild_name, error));
+                    }
+                }
+                if timed_out_from.is_empty() && failed_guilds.is_empty() {
+                    response_content = format!("User {} was not found in any guilds.", user_tag);
+                }
+                
+                let response = CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content(response_content.clone())
+                        .ephemeral(true)
+                );
+                
+                command.create_response(&ctx.http, response).await.ok();
+                self.db.log_bot_response(user_id, Some("/timeout"), "slash_command", &response_content, !timed_out_from.is_empty()).await.ok();
+            } else {
+                let response = CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content(format!("User '{}' not found. Please use their username, @handle, or server nickname.", user_handle))
+                        .ephemeral(true)
+                );
+                command.create_response(&ctx.http, response).await.ok();
+                self.db.log_bot_response(user_id, Some("/timeout"), "slash_command", "User not found", false).await.ok();
+            }
+        }
+    }
+
+    async fn handle_cache_slash(&self, ctx: &Context, command: &serenity::all::CommandInteraction) {
+        let user_id = command.user.id.get();
+        
+        if !self.db.is_whitelisted(user_id).await.unwrap_or(false) {
+            let response = CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("You are not authorized to use this command.")
+                    .ephemeral(true)
+            );
+            command.create_response(&ctx.http, response).await.ok();
+            self.db.log_bot_response(user_id, Some("/cache"), "slash_command", "Unauthorized", false).await.ok();
+            return;
+        }
+        
+        let action = command.data.options.iter()
+            .find(|opt| opt.name == "action")
+            .and_then(|opt| opt.value.as_str());
+        
+        let response_content = if let Some(action) = action {
+            match action {
+                "on" => {
+                    self.db.set_setting("cache_media", "true").await.ok();
+                    info!("[SETTING] {} enabled media caching", user_id);
+                    "Media caching has been ENABLED".to_string()
+                }
+                "off" => {
+                    self.db.set_setting("cache_media", "false").await.ok();
+                    info!("[SETTING] {} disabled media caching", user_id);
+                    "Media caching has been DISABLED".to_string()
+                }
+                "status" | _ => {
+                    let current_status = self.db.get_setting("cache_media").await.ok()
+                        .flatten()
+                        .unwrap_or_else(|| "false".to_string());
+                    format!("Media caching is currently: {}",
+                        if current_status == "true" { "ENABLED" } else { "DISABLED" })
+                }
+            }
+        } else {
+            // Default to status if no action specified
+            let current_status = self.db.get_setting("cache_media").await.ok()
+                .flatten()
+                .unwrap_or_else(|| "false".to_string());
+            format!("Media caching is currently: {}",
+                if current_status == "true" { "ENABLED" } else { "DISABLED" })
+        };
+        
+        let response = CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content(response_content.clone())
+                .ephemeral(true)
+        );
+        
+        command.create_response(&ctx.http, response).await.ok();
+        self.db.log_bot_response(user_id, Some("/cache"), "slash_command", &response_content, true).await.ok();
+    }
+
+    async fn handle_whitelist_slash(&self, ctx: &Context, command: &serenity::all::CommandInteraction) {
+        let user_id = command.user.id.get();
+        
+        if !self.db.is_super_user(user_id).await.unwrap_or(false) {
+            let response = CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("You are not authorized to use this command. Only super users can manage the whitelist.")
+                    .ephemeral(true)
+            );
+            command.create_response(&ctx.http, response).await.ok();
+            self.db.log_bot_response(user_id, Some("/whitelist"), "slash_command", "Unauthorized", false).await.ok();
+            return;
+        }
+        
+        let action = command.data.options.iter()
+            .find(|opt| opt.name == "action")
+            .and_then(|opt| opt.value.as_str());
+        
+        let user_handle = command.data.options.iter()
+            .find(|opt| opt.name == "user")
+            .and_then(|opt| opt.value.as_str());
+        
+        if let (Some(action), Some(user_handle)) = (action, user_handle) {
+            if let Some((target_id, user_tag)) = self.command_handler.find_user_by_handle(ctx, user_handle).await {
+                let response_content = match action {
+                    "add" => {
+                        if self.db.is_whitelisted(target_id.get()).await.unwrap_or(false) {
+                            format!("User {} is already whitelisted.", user_tag)
+                        } else {
+                            self.db.add_to_whitelist(target_id.get()).await.ok();
+                            info!("[WHITELIST] {} added {} ({}) to whitelist", user_id, user_tag, target_id);
+                            format!("Successfully added {} to the whitelist.", user_tag)
+                        }
+                    }
+                    "remove" => {
+                        if self.db.is_super_user(target_id.get()).await.unwrap_or(false) {
+                            format!("Cannot remove {} from whitelist as they are a super user.", user_tag)
+                        } else {
+                            self.db.remove_from_whitelist(target_id.get()).await.ok();
+                            info!("[WHITELIST] {} removed {} ({}) from whitelist", user_id, user_tag, target_id);
+                            format!("Successfully removed {} from the whitelist.", user_tag)
+                        }
+                    }
+                    _ => "Invalid action".to_string()
+                };
+                
+                let response = CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content(response_content.clone())
+                        .ephemeral(true)
+                );
+                
+                command.create_response(&ctx.http, response).await.ok();
+                self.db.log_bot_response(user_id, Some("/whitelist"), "slash_command", &response_content, true).await.ok();
+            } else {
+                let response = CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content(format!("User '{}' not found. Please use their username, @handle, or server nickname.", user_handle))
+                        .ephemeral(true)
+                );
+                command.create_response(&ctx.http, response).await.ok();
+                self.db.log_bot_response(user_id, Some("/whitelist"), "slash_command", "User not found", false).await.ok();
+            }
         }
     }
 }
@@ -336,6 +802,8 @@ impl EventHandler for Handler {
 
         // Register slash commands
         info!("Registering slash commands...");
+        
+        // Register /snort command
         match Command::create_global_command(
             &ctx.http,
             serenity::all::CreateCommand::new("snort")
@@ -345,6 +813,165 @@ impl EventHandler for Handler {
         {
             Ok(command) => info!("Registered /snort command with ID: {}", command.id),
             Err(e) => error!("Failed to register /snort command: {}", e),
+        }
+
+        // Register /help command
+        match Command::create_global_command(
+            &ctx.http,
+            serenity::all::CreateCommand::new("help")
+                .description("Show available commands"),
+        )
+        .await
+        {
+            Ok(command) => info!("Registered /help command with ID: {}", command.id),
+            Err(e) => error!("Failed to register /help command: {}", e),
+        }
+
+        // Register /kick command
+        match Command::create_global_command(
+            &ctx.http,
+            serenity::all::CreateCommand::new("kick")
+                .description("Kick a user from all guilds")
+                .add_option(
+                    serenity::all::CreateCommandOption::new(
+                        serenity::all::CommandOptionType::String,
+                        "user",
+                        "Username, @handle, or server nickname"
+                    )
+                    .required(true)
+                )
+                .add_option(
+                    serenity::all::CreateCommandOption::new(
+                        serenity::all::CommandOptionType::String,
+                        "reason",
+                        "Reason for the kick"
+                    )
+                    .required(false)
+                ),
+        )
+        .await
+        {
+            Ok(command) => info!("Registered /kick command with ID: {}", command.id),
+            Err(e) => error!("Failed to register /kick command: {}", e),
+        }
+
+        // Register /ban command
+        match Command::create_global_command(
+            &ctx.http,
+            serenity::all::CreateCommand::new("ban")
+                .description("Ban a user from all guilds")
+                .add_option(
+                    serenity::all::CreateCommandOption::new(
+                        serenity::all::CommandOptionType::String,
+                        "user",
+                        "Username, @handle, or server nickname"
+                    )
+                    .required(true)
+                )
+                .add_option(
+                    serenity::all::CreateCommandOption::new(
+                        serenity::all::CommandOptionType::String,
+                        "reason",
+                        "Reason for the ban"
+                    )
+                    .required(false)
+                ),
+        )
+        .await
+        {
+            Ok(command) => info!("Registered /ban command with ID: {}", command.id),
+            Err(e) => error!("Failed to register /ban command: {}", e),
+        }
+
+        // Register /timeout command
+        match Command::create_global_command(
+            &ctx.http,
+            serenity::all::CreateCommand::new("timeout")
+                .description("Timeout a user in all guilds")
+                .add_option(
+                    serenity::all::CreateCommandOption::new(
+                        serenity::all::CommandOptionType::String,
+                        "user",
+                        "Username, @handle, or server nickname"
+                    )
+                    .required(true)
+                )
+                .add_option(
+                    serenity::all::CreateCommandOption::new(
+                        serenity::all::CommandOptionType::Integer,
+                        "duration",
+                        "Duration in minutes (max 40320 - 28 days)"
+                    )
+                    .required(true)
+                    .min_int_value(1)
+                    .max_int_value(40320)
+                )
+                .add_option(
+                    serenity::all::CreateCommandOption::new(
+                        serenity::all::CommandOptionType::String,
+                        "reason",
+                        "Reason for the timeout"
+                    )
+                    .required(false)
+                ),
+        )
+        .await
+        {
+            Ok(command) => info!("Registered /timeout command with ID: {}", command.id),
+            Err(e) => error!("Failed to register /timeout command: {}", e),
+        }
+
+        // Register /cache command
+        match Command::create_global_command(
+            &ctx.http,
+            serenity::all::CreateCommand::new("cache")
+                .description("Toggle media caching")
+                .add_option(
+                    serenity::all::CreateCommandOption::new(
+                        serenity::all::CommandOptionType::String,
+                        "action",
+                        "Enable or disable media caching"
+                    )
+                    .add_string_choice("on", "on")
+                    .add_string_choice("off", "off")
+                    .add_string_choice("status", "status")
+                    .required(false)
+                ),
+        )
+        .await
+        {
+            Ok(command) => info!("Registered /cache command with ID: {}", command.id),
+            Err(e) => error!("Failed to register /cache command: {}", e),
+        }
+
+        // Register /whitelist command
+        match Command::create_global_command(
+            &ctx.http,
+            serenity::all::CreateCommand::new("whitelist")
+                .description("Manage command whitelist (super users only)")
+                .add_option(
+                    serenity::all::CreateCommandOption::new(
+                        serenity::all::CommandOptionType::String,
+                        "action",
+                        "Add or remove from whitelist"
+                    )
+                    .add_string_choice("add", "add")
+                    .add_string_choice("remove", "remove")
+                    .required(true)
+                )
+                .add_option(
+                    serenity::all::CreateCommandOption::new(
+                        serenity::all::CommandOptionType::String,
+                        "user",
+                        "Username, @handle, or server nickname"
+                    )
+                    .required(true)
+                ),
+        )
+        .await
+        {
+            Ok(command) => info!("Registered /whitelist command with ID: {}", command.id),
+            Err(e) => error!("Failed to register /whitelist command: {}", e),
         }
 
         let ctx_arc = Arc::new(ctx);
@@ -358,6 +985,24 @@ impl EventHandler for Handler {
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
         if let Interaction::Command(command) = interaction {
             match command.data.name.as_str() {
+                "help" => {
+                    self.handle_help_slash(&ctx, &command).await;
+                }
+                "kick" => {
+                    self.handle_kick_slash(&ctx, &command).await;
+                }
+                "ban" => {
+                    self.handle_ban_slash(&ctx, &command).await;
+                }
+                "timeout" => {
+                    self.handle_timeout_slash(&ctx, &command).await;
+                }
+                "cache" => {
+                    self.handle_cache_slash(&ctx, &command).await;
+                }
+                "whitelist" => {
+                    self.handle_whitelist_slash(&ctx, &command).await;
+                }
                 "snort" => {
                     if let Some(guild_id) = command.guild_id {
                         // Check cooldown

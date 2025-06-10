@@ -183,24 +183,23 @@ This keeps logs cross-referenced with accurate identity metadata for auditing or
 
 ## Commands
 
-### DM Commands (Direct Messages)
+All commands are implemented as Discord slash commands:
 
-Only accepted via **Direct Messages** to preserve anonymity:
+### Slash Commands
 
 | Command                          | Description                             | Access           |
 |----------------------------------|-----------------------------------------|------------------|
-| `/kick <@user> [reason]`         | Removes user from all connected servers | Whitelisted only |
-| `/ban <@user> [reason]`          | Bans user from all connected servers    | Whitelisted only |
-| `/timeout <@user> <mins> [reason]` | Temporarily mutes user in all servers   | Whitelisted only |
-| `/cache [on|off]`                | Toggle media caching                    | Whitelisted only |
-| `/whitelist <add|remove> <@user>`| Manage command whitelist                | Super users only |
-| `/help`                          | Show command list                       | Anyone           |
+| `/help`                          | Show available commands                 | Anyone           |
+| `/kick <user> [reason]`          | Kick user from all connected servers    | Whitelisted only |
+| `/ban <user> [reason]`           | Ban user from all connected servers     | Whitelisted only |
+| `/timeout <user> <duration> [reason]` | Timeout user in all servers (1-40320 mins) | Whitelisted only |
+| `/cache [action]`                | Toggle/check media caching (on/off/status) | Whitelisted only |
+| `/whitelist <action> <user>`     | Manage command whitelist (add/remove)   | Super users only |
+| `/snort`                         | Snort brightdust! Tracks global count   | Anyone           |
 
-### Slash Commands (Server Channels)
+### Legacy DM Support
 
-| Command  | Description                                        | Access  |
-|----------|----------------------------------------------------|---------|
-| `/snort` | Snort brightdust! Tracks global count with cooldown | Anyone  |
+The bot still processes DM commands for backward compatibility, but slash commands are the preferred method.
 
 User permissions are validated against the `command_whitelist` and `super_user_whitelist` tables.
 
