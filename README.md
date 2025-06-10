@@ -9,6 +9,9 @@ A full-spectrum Discord moderation and logging bot designed for transparency and
 - **Voice Activity Tracking**: Logs joins, leaves, and channel switches
 - **Forum/Thread Monitoring**: Tracks thread creation and content
 - **User Database**: Maintains records of all server users with metadata
+- **Member Presence Tracking**: Logs status changes (online/idle/dnd/offline) and activities
+- **Nickname Change Detection**: Tracks all nickname modifications with timestamps
+- **Channel Audit Logging**: Monitors channel creation, deletion, and modifications (name, topic, permissions)
 - **DM-Based Moderation**: Anonymous moderation commands via DMs
 - **Whitelist System**: Only authorized users can use moderation commands
 - **Background Sync**: Automatic user data synchronization every 12 hours
@@ -66,6 +69,7 @@ INSERT INTO command_whitelist (discord_user_id) VALUES (123456789012345678);
 - Moderate Members (for timeouts)
 - Kick Members
 - Ban Members
+- View Server Insights (for presence tracking)
 
 ## Media Caching
 

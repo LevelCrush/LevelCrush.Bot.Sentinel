@@ -146,6 +146,72 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
+        // Member status/presence logs
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS member_status_logs (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                user_id BIGINT NOT NULL,
+                guild_id BIGINT NOT NULL,
+                status VARCHAR(20),
+                client_status_desktop VARCHAR(20),
+                client_status_mobile VARCHAR(20),
+                client_status_web VARCHAR(20),
+                activity_type VARCHAR(50),
+                activity_name TEXT,
+                activity_details TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_user_id (user_id),
+                INDEX idx_guild_id (guild_id),
+                INDEX idx_timestamp (timestamp)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Nickname change logs
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS nickname_logs (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                user_id BIGINT NOT NULL,
+                guild_id BIGINT NOT NULL,
+                old_nickname VARCHAR(255),
+                new_nickname VARCHAR(255),
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_user_id (user_id),
+                INDEX idx_guild_id (guild_id),
+                INDEX idx_timestamp (timestamp)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Channel modification logs
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS channel_logs (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                channel_id BIGINT NOT NULL,
+                guild_id BIGINT NOT NULL,
+                action VARCHAR(50) NOT NULL,
+                field_name VARCHAR(100),
+                old_value TEXT,
+                new_value TEXT,
+                actor_id BIGINT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_channel_id (channel_id),
+                INDEX idx_guild_id (guild_id),
+                INDEX idx_action (action),
+                INDEX idx_timestamp (timestamp)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 
@@ -351,6 +417,93 @@ impl Database {
             .bind(attachment_id as i64)
             .execute(&self.pool)
             .await?;
+
+        Ok(())
+    }
+
+    pub async fn log_member_status(
+        &self,
+        user_id: u64,
+        guild_id: u64,
+        status: Option<&str>,
+        client_status: Option<(&str, &str, &str)>,
+        activity: Option<(&str, &str, Option<&str>)>,
+    ) -> Result<()> {
+        let (desktop, mobile, web) = client_status.unwrap_or(("offline", "offline", "offline"));
+        let (activity_type, activity_name, activity_details) =
+            activity.unwrap_or(("None", "", None));
+
+        sqlx::query(
+            r#"
+            INSERT INTO member_status_logs 
+            (user_id, guild_id, status, client_status_desktop, client_status_mobile, client_status_web, 
+             activity_type, activity_name, activity_details)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#
+        )
+        .bind(user_id as i64)
+        .bind(guild_id as i64)
+        .bind(status)
+        .bind(desktop)
+        .bind(mobile)
+        .bind(web)
+        .bind(activity_type)
+        .bind(activity_name)
+        .bind(activity_details)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn log_nickname_change(
+        &self,
+        user_id: u64,
+        guild_id: u64,
+        old_nickname: Option<&str>,
+        new_nickname: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO nickname_logs (user_id, guild_id, old_nickname, new_nickname)
+            VALUES (?, ?, ?, ?)
+            "#,
+        )
+        .bind(user_id as i64)
+        .bind(guild_id as i64)
+        .bind(old_nickname)
+        .bind(new_nickname)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn log_channel_change(
+        &self,
+        channel_id: u64,
+        guild_id: u64,
+        action: &str,
+        field_name: Option<&str>,
+        old_value: Option<&str>,
+        new_value: Option<&str>,
+        actor_id: Option<u64>,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO channel_logs (channel_id, guild_id, action, field_name, old_value, new_value, actor_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            "#
+        )
+        .bind(channel_id as i64)
+        .bind(guild_id as i64)
+        .bind(action)
+        .bind(field_name)
+        .bind(old_value)
+        .bind(new_value)
+        .bind(actor_id.map(|id| id as i64))
+        .execute(&self.pool)
+        .await?;
 
         Ok(())
     }

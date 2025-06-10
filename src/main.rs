@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use serenity::all::{
-    ChannelType, Context, EventHandler, GatewayIntents, Guild, GuildChannel, Message, Ready,
-    VoiceState,
+    ChannelType, Context, EventHandler, GatewayIntents, Guild, GuildChannel,
+    GuildMemberUpdateEvent, Member, Message, Presence, Ready, VoiceState,
 };
 use serenity::async_trait;
 use serenity::client::Client;
@@ -119,35 +119,35 @@ impl EventHandler for Handler {
                         }
                     }
                 }
-            }
 
-            let nickname = msg.member.as_ref().and_then(|m| m.nick.as_deref());
-            info!(
-                "[USER UPDATE] {} ({}) - nickname: {}",
-                msg.author.name,
-                msg.author.id,
-                nickname.unwrap_or("none")
-            );
+                let nickname = msg.member.as_ref().and_then(|m| m.nick.as_deref());
+                info!(
+                    "[USER UPDATE] {} ({}) - nickname: {}",
+                    msg.author.name,
+                    msg.author.id,
+                    nickname.unwrap_or("none")
+                );
 
-            if let Err(e) = self
-                .db
-                .update_user(
-                    msg.author.id.get(),
-                    &msg.author.name,
-                    msg.author
-                        .discriminator
-                        .map(|d| d.get().to_string())
-                        .as_deref(),
-                    if msg.author.discriminator.is_some() {
-                        None
-                    } else {
-                        Some(&msg.author.name)
-                    },
-                    nickname,
-                )
-                .await
-            {
-                error!("Failed to update user: {}", e);
+                if let Err(e) = self
+                    .db
+                    .update_user(
+                        msg.author.id.get(),
+                        &msg.author.name,
+                        msg.author
+                            .discriminator
+                            .map(|d| d.get().to_string())
+                            .as_deref(),
+                        if msg.author.discriminator.is_some() {
+                            None
+                        } else {
+                            Some(&msg.author.name)
+                        },
+                        nickname,
+                    )
+                    .await
+                {
+                    error!("Failed to update user: {}", e);
+                }
             }
         }
     }
@@ -277,6 +277,306 @@ impl EventHandler for Handler {
             error!("Failed to start background jobs: {}", e);
         }
     }
+
+    async fn presence_update(&self, _ctx: Context, new_data: Presence) {
+        if let Some(guild_id) = new_data.guild_id {
+            let user_id = new_data.user.id.get();
+
+            // Get status information
+            let status = new_data.status.name();
+
+            // Get client status (desktop, mobile, web)
+            let client_status = if let Some(cs) = &new_data.client_status {
+                (
+                    cs.desktop.as_ref().map(|s| s.name()).unwrap_or("offline"),
+                    cs.mobile.as_ref().map(|s| s.name()).unwrap_or("offline"),
+                    cs.web.as_ref().map(|s| s.name()).unwrap_or("offline"),
+                )
+            } else {
+                ("offline", "offline", "offline")
+            };
+
+            // Get activity information
+            let activity = new_data.activities.first().map(|act| {
+                let activity_type = match act.kind {
+                    serenity::all::ActivityType::Playing => "Playing",
+                    serenity::all::ActivityType::Streaming => "Streaming",
+                    serenity::all::ActivityType::Listening => "Listening",
+                    serenity::all::ActivityType::Watching => "Watching",
+                    serenity::all::ActivityType::Custom => "Custom",
+                    serenity::all::ActivityType::Competing => "Competing",
+                    _ => "Unknown",
+                };
+
+                (activity_type, act.name.as_str(), act.details.as_deref())
+            });
+
+            info!(
+                "[PRESENCE] User {} in guild {} - Status: {} - Activity: {:?}",
+                user_id,
+                guild_id,
+                status,
+                activity
+                    .map(|(t, n, _)| format!("{} {}", t, n))
+                    .unwrap_or_else(|| "None".to_string())
+            );
+
+            if let Err(e) = self
+                .db
+                .log_member_status(
+                    user_id,
+                    guild_id.get(),
+                    Some(status),
+                    Some(client_status),
+                    activity,
+                )
+                .await
+            {
+                error!("Failed to log member status: {}", e);
+            }
+        }
+    }
+
+    async fn guild_member_update(
+        &self,
+        _ctx: Context,
+        old_if_available: Option<Member>,
+        new: Option<Member>,
+        _event: GuildMemberUpdateEvent,
+    ) {
+        if let Some(new) = new {
+            let user_id = new.user.id.get();
+            let guild_id = new.guild_id.get();
+
+            // Check for nickname changes
+            if let Some(old) = old_if_available {
+                if old.nick != new.nick {
+                    info!(
+                        "[NICKNAME] User {} in guild {} changed nickname from {:?} to {:?}",
+                        user_id, guild_id, old.nick, new.nick
+                    );
+
+                    if let Err(e) = self
+                        .db
+                        .log_nickname_change(
+                            user_id,
+                            guild_id,
+                            old.nick.as_deref(),
+                            new.nick.as_deref(),
+                        )
+                        .await
+                    {
+                        error!("Failed to log nickname change: {}", e);
+                    }
+                }
+            }
+
+            // Also update the user record with new nickname
+            let user = &new.user;
+            let global_handle = if user.discriminator.is_some() {
+                None
+            } else {
+                Some(user.name.as_str())
+            };
+
+            let discriminator = user.discriminator.map(|d| d.get().to_string());
+
+            if let Err(e) = self
+                .db
+                .update_user(
+                    user_id,
+                    &user.name,
+                    discriminator.as_deref(),
+                    global_handle,
+                    new.nick.as_deref(),
+                )
+                .await
+            {
+                error!("Failed to update user: {}", e);
+            }
+        }
+    }
+
+    async fn channel_create(&self, _ctx: Context, channel: GuildChannel) {
+        let guild_id = channel.guild_id;
+        info!(
+            "[CHANNEL CREATE] Channel '{}' ({}) created in guild {}",
+            channel.name, channel.id, guild_id
+        );
+
+        if let Err(e) = self
+            .db
+            .log_channel_change(
+                channel.id.get(),
+                guild_id.get(),
+                "create",
+                Some("type"),
+                None,
+                Some(&format!("{:?}", channel.kind)),
+                None,
+            )
+            .await
+        {
+            error!("Failed to log channel creation: {}", e);
+        }
+    }
+
+    async fn channel_delete(
+        &self,
+        _ctx: Context,
+        channel: GuildChannel,
+        _messages: Option<Vec<Message>>,
+    ) {
+        let guild_id = channel.guild_id;
+        info!(
+            "[CHANNEL DELETE] Channel '{}' ({}) deleted from guild {}",
+            channel.name, channel.id, guild_id
+        );
+
+        if let Err(e) = self
+            .db
+            .log_channel_change(
+                channel.id.get(),
+                guild_id.get(),
+                "delete",
+                Some("name"),
+                Some(&channel.name),
+                None,
+                None,
+            )
+            .await
+        {
+            error!("Failed to log channel deletion: {}", e);
+        }
+    }
+
+    async fn channel_update(&self, _ctx: Context, old: Option<GuildChannel>, new: GuildChannel) {
+        if let Some(old_channel) = old {
+            let guild_id = new.guild_id;
+            let new_channel = &new;
+            let channel_id = new_channel.id.get();
+
+            // Check for name change
+            if old_channel.name != new_channel.name {
+                info!(
+                    "[CHANNEL UPDATE] Channel {} name changed from '{}' to '{}' in guild {}",
+                    channel_id, old_channel.name, new_channel.name, guild_id
+                );
+
+                if let Err(e) = self
+                    .db
+                    .log_channel_change(
+                        channel_id,
+                        guild_id.get(),
+                        "update",
+                        Some("name"),
+                        Some(&old_channel.name),
+                        Some(&new_channel.name),
+                        None,
+                    )
+                    .await
+                {
+                    error!("Failed to log channel name change: {}", e);
+                }
+            }
+
+            // Check for topic change (text channels)
+            if old_channel.topic != new_channel.topic {
+                info!(
+                    "[CHANNEL UPDATE] Channel {} topic changed in guild {}",
+                    channel_id, guild_id
+                );
+
+                if let Err(e) = self
+                    .db
+                    .log_channel_change(
+                        channel_id,
+                        guild_id.get(),
+                        "update",
+                        Some("topic"),
+                        old_channel.topic.as_deref(),
+                        new_channel.topic.as_deref(),
+                        None,
+                    )
+                    .await
+                {
+                    error!("Failed to log channel topic change: {}", e);
+                }
+            }
+
+            // Check for NSFW status change
+            if old_channel.nsfw != new_channel.nsfw {
+                info!(
+                    "[CHANNEL UPDATE] Channel {} NSFW status changed from {} to {} in guild {}",
+                    channel_id, old_channel.nsfw, new_channel.nsfw, guild_id
+                );
+
+                if let Err(e) = self
+                    .db
+                    .log_channel_change(
+                        channel_id,
+                        guild_id.get(),
+                        "update",
+                        Some("nsfw"),
+                        Some(&old_channel.nsfw.to_string()),
+                        Some(&new_channel.nsfw.to_string()),
+                        None,
+                    )
+                    .await
+                {
+                    error!("Failed to log channel NSFW change: {}", e);
+                }
+            }
+
+            // Check for position change
+            if old_channel.position != new_channel.position {
+                info!(
+                    "[CHANNEL UPDATE] Channel {} position changed from {} to {} in guild {}",
+                    channel_id, old_channel.position, new_channel.position, guild_id
+                );
+
+                if let Err(e) = self
+                    .db
+                    .log_channel_change(
+                        channel_id,
+                        guild_id.get(),
+                        "update",
+                        Some("position"),
+                        Some(&old_channel.position.to_string()),
+                        Some(&new_channel.position.to_string()),
+                        None,
+                    )
+                    .await
+                {
+                    error!("Failed to log channel position change: {}", e);
+                }
+            }
+
+            // Check for permission overwrites changes
+            if old_channel.permission_overwrites != new_channel.permission_overwrites {
+                info!(
+                    "[CHANNEL UPDATE] Channel {} permissions changed in guild {}",
+                    channel_id, guild_id
+                );
+
+                if let Err(e) = self
+                    .db
+                    .log_channel_change(
+                        channel_id,
+                        guild_id.get(),
+                        "update",
+                        Some("permissions"),
+                        Some(&format!("{:?}", old_channel.permission_overwrites)),
+                        Some(&format!("{:?}", new_channel.permission_overwrites)),
+                        None,
+                    )
+                    .await
+                {
+                    error!("Failed to log channel permission change: {}", e);
+                }
+            }
+        }
+    }
 }
 
 #[tokio::main]
@@ -313,7 +613,8 @@ async fn main() -> Result<()> {
         | GatewayIntents::MESSAGE_CONTENT
         | GatewayIntents::GUILD_MESSAGE_REACTIONS
         | GatewayIntents::DIRECT_MESSAGES
-        | GatewayIntents::GUILD_MESSAGE_TYPING;
+        | GatewayIntents::GUILD_MESSAGE_TYPING
+        | GatewayIntents::GUILD_PRESENCES;
 
     let handler = Handler::new(db.clone(), media_cache.clone());
 

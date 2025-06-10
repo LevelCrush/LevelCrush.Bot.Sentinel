@@ -12,9 +12,14 @@ Sentinel is a Discord bot written in Rust using the Serenity framework (v0.12). 
 Key features include:
 
 - Logging all Discord activity (messages, voice, threads, forums)
+- **Media attachment caching**: Downloads and stores all media locally (toggleable)
+- **Member presence tracking**: Status changes (online/idle/dnd/offline) and activities
+- **Nickname monitoring**: Tracks all nickname changes with timestamps
+- **Channel audit logs**: Creation, deletion, and modifications (name, topic, permissions)
 - Tracking all server users with metadata syncing
 - Background job to keep usernames, nicknames, and handles current
 - Whitelist-restricted moderation commands sent via Direct Message
+- Automatic cleanup of cached media older than 31 days
 - Data stored in a MariaDB database
 
 ---
