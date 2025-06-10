@@ -738,12 +738,36 @@ impl EventHandler for Handler {
 async fn main() -> Result<()> {
     dotenv::dotenv().ok();
 
-    tracing_subscriber::fmt()
-        .with_env_filter(
+    use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt};
+
+    // Set up file logging with daily rotation
+    let file_appender = tracing_appender::rolling::daily("logs", "sentinel.log");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+
+    // Create a layer for file output (JSON format)
+    let file_layer = fmt::layer()
+        .with_writer(non_blocking)
+        .with_ansi(false)
+        .json()
+        .with_target(true)
+        .with_thread_ids(true)
+        .with_thread_names(true);
+
+    // Create a layer for console output
+    let console_layer = fmt::layer()
+        .with_writer(std::io::stdout)
+        .with_ansi(true)
+        .pretty();
+
+    // Combine layers
+    tracing_subscriber::registry()
+        .with(
             tracing_subscriber::EnvFilter::from_default_env()
                 .add_directive("sentinel=info".parse()?)
                 .add_directive("serenity=warn".parse()?),
         )
+        .with(file_layer)
+        .with(console_layer)
         .init();
 
     let token = env::var("DISCORD_TOKEN").expect("Expected DISCORD_TOKEN in environment");

@@ -232,6 +232,26 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
+        // Bot response logs
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS bot_response_logs (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                user_id BIGINT NOT NULL,
+                command VARCHAR(50),
+                response_type VARCHAR(50),
+                response_content TEXT,
+                success BOOLEAN DEFAULT TRUE,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_user_id (user_id),
+                INDEX idx_command (command),
+                INDEX idx_timestamp (timestamp)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 
@@ -547,6 +567,31 @@ impl Database {
         .bind(content)
         .bind(command)
         .bind(timestamp)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn log_bot_response(
+        &self,
+        user_id: u64,
+        command: Option<&str>,
+        response_type: &str,
+        response_content: &str,
+        success: bool,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO bot_response_logs (user_id, command, response_type, response_content, success)
+            VALUES (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(user_id as i64)
+        .bind(command)
+        .bind(response_type)
+        .bind(response_content)
+        .bind(success)
         .execute(&self.pool)
         .await?;
 

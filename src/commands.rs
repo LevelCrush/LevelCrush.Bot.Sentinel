@@ -3,7 +3,7 @@ use anyhow::Result;
 use serenity::all::{
     Colour, Context, CreateEmbed, CreateMessage, EditMember, Message, Timestamp, UserId,
 };
-use tracing::info;
+use tracing::{error, info};
 
 pub struct CommandHandler {
     db: Database,
@@ -12,6 +12,81 @@ pub struct CommandHandler {
 impl CommandHandler {
     pub fn new(db: Database) -> Self {
         Self { db }
+    }
+
+    async fn send_response(
+        &self,
+        ctx: &Context,
+        msg: &Message,
+        content: String,
+        command: &str,
+        success: bool,
+    ) -> Result<()> {
+        // Send the message
+        let result = msg
+            .author
+            .direct_message(ctx, CreateMessage::new().content(&content))
+            .await;
+
+        // Log the response
+        if let Err(e) = self
+            .db
+            .log_bot_response(msg.author.id.get(), Some(command), "dm", &content, success)
+            .await
+        {
+            error!("Failed to log bot response: {}", e);
+        }
+
+        // Log to tracing
+        info!(
+            "[BOT RESPONSE] To {} ({}): {}",
+            msg.author.name, msg.author.id, content
+        );
+
+        result?;
+        Ok(())
+    }
+
+    async fn send_embed_response(
+        &self,
+        ctx: &Context,
+        msg: &Message,
+        embed: CreateEmbed,
+        command: &str,
+        success: bool,
+    ) -> Result<()> {
+        // Create a simple description for logging
+        let embed_description = format!("Embed response for {} command", command);
+
+        // Send the message
+        let result = msg
+            .author
+            .direct_message(ctx, CreateMessage::new().embed(embed))
+            .await;
+
+        // Log the response
+        if let Err(e) = self
+            .db
+            .log_bot_response(
+                msg.author.id.get(),
+                Some(command),
+                "dm_embed",
+                &embed_description,
+                success,
+            )
+            .await
+        {
+            error!("Failed to log bot response: {}", e);
+        }
+
+        // Log to tracing
+        info!(
+            "[BOT RESPONSE] To {} ({}): {}",
+            msg.author.name, msg.author.id, embed_description
+        );
+
+        result?;
+        Ok(())
     }
 
     async fn find_user_by_handle(&self, ctx: &Context, handle: &str) -> Option<(UserId, String)> {
@@ -72,8 +147,7 @@ impl CommandHandler {
 
                 response.push_str("Use /help to see all available commands.");
 
-                msg.author
-                    .direct_message(ctx, CreateMessage::new().content(response))
+                self.send_response(ctx, msg, response, "unknown", false)
                     .await?;
             }
         }
@@ -145,8 +219,7 @@ impl CommandHandler {
                 )
                 .colour(Colour::BLUE);
 
-            msg.author
-                .direct_message(&ctx.http, CreateMessage::new().embed(help_embed))
+            self.send_embed_response(ctx, msg, help_embed, "/help", true)
                 .await?;
         } else {
             let alert_message = args.join(" ");
@@ -183,12 +256,14 @@ impl CommandHandler {
                     .await;
             }
 
-            msg.author
-                .direct_message(
-                    &ctx.http,
-                    CreateMessage::new().content("Your help alert has been sent to moderators."),
-                )
-                .await?;
+            self.send_response(
+                ctx,
+                msg,
+                "Your help alert has been sent to moderators.".to_string(),
+                "/help",
+                true,
+            )
+            .await?;
         }
 
         Ok(())
@@ -196,22 +271,26 @@ impl CommandHandler {
 
     async fn handle_kick(&self, ctx: &Context, msg: &Message, args: &[&str]) -> Result<()> {
         if !self.db.is_whitelisted(msg.author.id.get()).await? {
-            msg.author
-                .direct_message(
-                    &ctx.http,
-                    CreateMessage::new().content("You are not authorized to use this command."),
-                )
-                .await?;
+            self.send_response(
+                ctx,
+                msg,
+                "You are not authorized to use this command.".to_string(),
+                "/kick",
+                false,
+            )
+            .await?;
             return Ok(());
         }
 
         if args.is_empty() {
-            msg.author
-                .direct_message(
-                    &ctx.http,
-                    CreateMessage::new().content("Usage: /kick <@user> [reason]"),
-                )
-                .await?;
+            self.send_response(
+                ctx,
+                msg,
+                "Usage: /kick <@user> [reason]".to_string(),
+                "/kick",
+                false,
+            )
+            .await?;
             return Ok(());
         }
 
@@ -306,19 +385,20 @@ impl CommandHandler {
                 response = format!("User {} was not found in any guilds.", user_tag);
             }
 
-            msg.author
-                .direct_message(&ctx.http, CreateMessage::new().content(response))
+            self.send_response(ctx, msg, response, "/kick", !kicked_from.is_empty())
                 .await?;
         } else {
-            msg.author
-                .direct_message(
-                    &ctx.http,
-                    CreateMessage::new().content(format!(
+            self.send_response(
+                ctx,
+                msg,
+                format!(
                     "User '{}' not found. Please use their username, @handle, or server nickname.",
                     user_handle
-                )),
-                )
-                .await?;
+                ),
+                "/kick",
+                false,
+            )
+            .await?;
         }
 
         Ok(())
@@ -326,22 +406,26 @@ impl CommandHandler {
 
     async fn handle_ban(&self, ctx: &Context, msg: &Message, args: &[&str]) -> Result<()> {
         if !self.db.is_whitelisted(msg.author.id.get()).await? {
-            msg.author
-                .direct_message(
-                    &ctx.http,
-                    CreateMessage::new().content("You are not authorized to use this command."),
-                )
-                .await?;
+            self.send_response(
+                ctx,
+                msg,
+                "You are not authorized to use this command.".to_string(),
+                "/ban",
+                false,
+            )
+            .await?;
             return Ok(());
         }
 
         if args.is_empty() {
-            msg.author
-                .direct_message(
-                    &ctx.http,
-                    CreateMessage::new().content("Usage: /ban <@user> [reason]"),
-                )
-                .await?;
+            self.send_response(
+                ctx,
+                msg,
+                "Usage: /ban <@user> [reason]".to_string(),
+                "/ban",
+                false,
+            )
+            .await?;
             return Ok(());
         }
 
@@ -429,19 +513,20 @@ impl CommandHandler {
                 response = "No guilds found to ban the user from.".to_string();
             }
 
-            msg.author
-                .direct_message(&ctx.http, CreateMessage::new().content(response))
+            self.send_response(ctx, msg, response, "/ban", !banned_from.is_empty())
                 .await?;
         } else {
-            msg.author
-                .direct_message(
-                    &ctx.http,
-                    CreateMessage::new().content(format!(
+            self.send_response(
+                ctx,
+                msg,
+                format!(
                     "User '{}' not found. Please use their username, @handle, or server nickname.",
                     user_handle
-                )),
-                )
-                .await?;
+                ),
+                "/ban",
+                false,
+            )
+            .await?;
         }
 
         Ok(())
@@ -449,23 +534,26 @@ impl CommandHandler {
 
     async fn handle_timeout(&self, ctx: &Context, msg: &Message, args: &[&str]) -> Result<()> {
         if !self.db.is_whitelisted(msg.author.id.get()).await? {
-            msg.author
-                .direct_message(
-                    &ctx.http,
-                    CreateMessage::new().content("You are not authorized to use this command."),
-                )
-                .await?;
+            self.send_response(
+                ctx,
+                msg,
+                "You are not authorized to use this command.".to_string(),
+                "/timeout",
+                false,
+            )
+            .await?;
             return Ok(());
         }
 
         if args.len() < 2 {
-            msg.author
-                .direct_message(
-                    &ctx.http,
-                    CreateMessage::new()
-                        .content("Usage: /timeout <@user> <duration_minutes> [reason]"),
-                )
-                .await?;
+            self.send_response(
+                ctx,
+                msg,
+                "Usage: /timeout <@user> <duration_minutes> [reason]".to_string(),
+                "/timeout",
+                false,
+            )
+            .await?;
             return Ok(());
         }
 
@@ -483,26 +571,29 @@ impl CommandHandler {
                 const MAX_TIMEOUT_MINUTES: u64 = 28 * 24 * 60;
 
                 if duration_minutes > MAX_TIMEOUT_MINUTES {
-                    msg.author
-                    .direct_message(
-                        &ctx.http,
-                        CreateMessage::new().content(format!(
+                    self.send_response(
+                        ctx,
+                        msg,
+                        format!(
                             "Timeout duration cannot exceed 28 days ({} minutes). You specified {} minutes.",
                             MAX_TIMEOUT_MINUTES, duration_minutes
-                        )),
+                        ),
+                        "/timeout",
+                        false,
                     )
                     .await?;
                     return Ok(());
                 }
 
                 if duration_minutes == 0 {
-                    msg.author
-                        .direct_message(
-                            &ctx.http,
-                            CreateMessage::new()
-                                .content("Timeout duration must be at least 1 minute"),
-                        )
-                        .await?;
+                    self.send_response(
+                        ctx,
+                        msg,
+                        "Timeout duration must be at least 1 minute".to_string(),
+                        "/timeout",
+                        false,
+                    )
+                    .await?;
                     return Ok(());
                 }
 
@@ -591,28 +682,30 @@ impl CommandHandler {
                     response = format!("User {} was not found in any guilds.", user_tag);
                 }
 
-                msg.author
-                    .direct_message(&ctx.http, CreateMessage::new().content(response))
+                self.send_response(ctx, msg, response, "/timeout", !timed_out_from.is_empty())
                     .await?;
             } else {
-                msg.author
-                    .direct_message(
-                        &ctx.http,
-                        CreateMessage::new()
-                            .content("Invalid duration. Please specify duration in minutes."),
-                    )
-                    .await?;
-            }
-        } else {
-            msg.author
-                .direct_message(
-                    &ctx.http,
-                    CreateMessage::new().content(format!(
-                    "User '{}' not found. Please use their username, @handle, or server nickname.",
-                    user_handle
-                )),
+                self.send_response(
+                    ctx,
+                    msg,
+                    "Invalid duration. Please specify duration in minutes.".to_string(),
+                    "/timeout",
+                    false,
                 )
                 .await?;
+            }
+        } else {
+            self.send_response(
+                ctx,
+                msg,
+                format!(
+                    "User '{}' not found. Please use their username, @handle, or server nickname.",
+                    user_handle
+                ),
+                "/timeout",
+                false,
+            )
+            .await?;
         }
 
         Ok(())
@@ -620,12 +713,14 @@ impl CommandHandler {
 
     async fn handle_cache_toggle(&self, ctx: &Context, msg: &Message, args: &[&str]) -> Result<()> {
         if !self.db.is_whitelisted(msg.author.id.get()).await? {
-            msg.author
-                .direct_message(
-                    &ctx.http,
-                    CreateMessage::new().content("You are not authorized to use this command."),
-                )
-                .await?;
+            self.send_response(
+                ctx,
+                msg,
+                "You are not authorized to use this command.".to_string(),
+                "/cache",
+                false,
+            )
+            .await?;
             return Ok(());
         }
 
@@ -637,50 +732,58 @@ impl CommandHandler {
                 .await?
                 .unwrap_or_else(|| "false".to_string());
 
-            msg.author
-                .direct_message(
-                    &ctx.http,
-                    CreateMessage::new().content(format!(
-                        "Media caching is currently: {}",
-                        if current_status == "true" {
-                            "ENABLED"
-                        } else {
-                            "DISABLED"
-                        }
-                    )),
-                )
-                .await?;
+            self.send_response(
+                ctx,
+                msg,
+                format!(
+                    "Media caching is currently: {}",
+                    if current_status == "true" {
+                        "ENABLED"
+                    } else {
+                        "DISABLED"
+                    }
+                ),
+                "/cache",
+                true,
+            )
+            .await?;
         } else {
             match args[0].to_lowercase().as_str() {
                 "on" | "enable" | "true" => {
                     self.db.set_setting("cache_media", "true").await?;
                     info!("[SETTING] {} enabled media caching", msg.author.id);
 
-                    msg.author
-                        .direct_message(
-                            &ctx.http,
-                            CreateMessage::new().content("Media caching has been ENABLED"),
-                        )
-                        .await?;
+                    self.send_response(
+                        ctx,
+                        msg,
+                        "Media caching has been ENABLED".to_string(),
+                        "/cache",
+                        true,
+                    )
+                    .await?;
                 }
                 "off" | "disable" | "false" => {
                     self.db.set_setting("cache_media", "false").await?;
                     info!("[SETTING] {} disabled media caching", msg.author.id);
 
-                    msg.author
-                        .direct_message(
-                            &ctx.http,
-                            CreateMessage::new().content("Media caching has been DISABLED"),
-                        )
-                        .await?;
+                    self.send_response(
+                        ctx,
+                        msg,
+                        "Media caching has been DISABLED".to_string(),
+                        "/cache",
+                        true,
+                    )
+                    .await?;
                 }
                 _ => {
-                    msg.author
-                        .direct_message(
-                            &ctx.http,
-                            CreateMessage::new().content("Usage: /cache [on|off]"),
-                        )
-                        .await?;
+                    self.send_response(
+                        ctx,
+                        msg,
+                        "Usage: /cache [on|off]".to_string(),
+                        "/cache",
+                        false,
+                    )
+                    .await?;
                 }
             }
         }

@@ -135,6 +135,17 @@ CREATE TABLE dm_logs (
   command VARCHAR(50),
   timestamp DATETIME
 );
+
+-- Bot response logs
+CREATE TABLE bot_response_logs (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  command VARCHAR(50),
+  response_type VARCHAR(50),
+  response_content TEXT,
+  success BOOLEAN DEFAULT TRUE,
+  timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 ```
 
 ---
@@ -242,6 +253,22 @@ GatewayIntents::GUILDS
 - Consider encrypting or anonymizing exported logs
 
 ---
+
+## Logging
+
+### Console & File Logging
+
+- **Console**: Pretty-printed logs with ANSI colors
+- **File**: JSON-formatted logs in `logs/sentinel.log` with daily rotation
+- **Location**: Log files stored in `logs/` directory (gitignored)
+- **Format**: Structured JSON with timestamps, thread info, and metadata
+
+### Database Logging
+
+All interactions are logged to database:
+- **DM Messages**: Stored in `dm_logs` table
+- **Bot Responses**: Stored in `bot_response_logs` table with success/failure status
+- **All Events**: Messages, voice, presence, joins/leaves, etc.
 
 ## Debugging
 

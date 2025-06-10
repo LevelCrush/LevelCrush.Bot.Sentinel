@@ -6,6 +6,8 @@ A full-spectrum Discord moderation and logging bot designed for transparency and
 
 - **Complete Message Logging**: All messages, edits, and deletions are tracked
 - **DM Logging**: All direct messages to the bot are logged to database
+- **Bot Response Logging**: All bot responses to commands are logged to database
+- **File Logging**: All logs written to daily rotating files in JSON format
 - **Media Attachment Caching**: Downloads and stores all media attachments locally (toggleable)
 - **Voice Activity Tracking**: Logs joins, leaves, and channel switches
 - **Forum/Thread Monitoring**: Tracks thread creation and content
