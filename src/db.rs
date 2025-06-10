@@ -266,6 +266,35 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
+        // Snort counter table
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS snort_counter (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                count BIGINT DEFAULT 0,
+                last_snort_time DATETIME,
+                last_snort_user_id BIGINT,
+                last_snort_guild_id BIGINT
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Initialize snort counter if it doesn't exist
+        sqlx::query(
+            "INSERT IGNORE INTO snort_counter (id, count) VALUES (1, 0)"
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Add default snort cooldown setting (in seconds)
+        sqlx::query(
+            "INSERT IGNORE INTO system_settings (setting_key, setting_value) VALUES ('snort_cooldown_seconds', '30')"
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 
@@ -645,5 +674,42 @@ impl Database {
         .await?;
 
         Ok(())
+    }
+
+    pub async fn increment_snort_counter(&self, user_id: u64, guild_id: u64) -> Result<i64> {
+        // Update the counter and return the new count
+        sqlx::query("UPDATE snort_counter SET count = count + 1, last_snort_time = NOW(), last_snort_user_id = ?, last_snort_guild_id = ? WHERE id = 1")
+            .bind(user_id as i64)
+            .bind(guild_id as i64)
+            .execute(&self.pool)
+            .await?;
+
+        // Get the new count
+        let count = sqlx::query_scalar::<_, i64>(
+            "SELECT count FROM snort_counter WHERE id = 1"
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(count)
+    }
+
+    pub async fn get_last_snort_time(&self) -> Result<Option<DateTime<Utc>>> {
+        let result = sqlx::query_scalar::<_, DateTime<Utc>>(
+            "SELECT last_snort_time FROM snort_counter WHERE id = 1"
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(result)
+    }
+
+    pub async fn get_snort_cooldown_seconds(&self) -> Result<u64> {
+        let result = self.get_setting("snort_cooldown_seconds").await?
+            .unwrap_or_else(|| "30".to_string())
+            .parse::<u64>()
+            .unwrap_or(30);
+
+        Ok(result)
     }
 }

@@ -153,6 +153,15 @@ CREATE TABLE bot_response_logs (
   success BOOLEAN DEFAULT TRUE,
   timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Snort counter
+CREATE TABLE snort_counter (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  count BIGINT DEFAULT 0,
+  last_snort_time DATETIME,
+  last_snort_user_id BIGINT,
+  last_snort_guild_id BIGINT
+);
 ```
 
 ---
@@ -172,7 +181,9 @@ This keeps logs cross-referenced with accurate identity metadata for auditing or
 
 ---
 
-## Moderation Commands
+## Commands
+
+### DM Commands (Direct Messages)
 
 Only accepted via **Direct Messages** to preserve anonymity:
 
@@ -183,7 +194,13 @@ Only accepted via **Direct Messages** to preserve anonymity:
 | `/timeout <@user> <mins> [reason]` | Temporarily mutes user in all servers   | Whitelisted only |
 | `/cache [on|off]`                | Toggle media caching                    | Whitelisted only |
 | `/whitelist <add|remove> <@user>`| Manage command whitelist                | Super users only |
-| `/help [message]`                | Sends mod alert (sender is attached)    | Anyone           |
+| `/help`                          | Show command list                       | Anyone           |
+
+### Slash Commands (Server Channels)
+
+| Command  | Description                                        | Access  |
+|----------|----------------------------------------------------|---------|
+| `/snort` | Snort brightdust! Tracks global count with cooldown | Anyone  |
 
 User permissions are validated against the `command_whitelist` and `super_user_whitelist` tables.
 
@@ -202,6 +219,10 @@ User permissions are validated against the `command_whitelist` and `super_user_w
 1. Search for the user by handle across all guilds
 2. Apply the moderation action to all applicable guilds
 3. Report back with detailed results per guild
+
+**Configurable Settings**: System settings stored in database:
+- `cache_media`: Enable/disable media caching (default: 'true')
+- `snort_cooldown_seconds`: Global cooldown for /snort command (default: '30')
 
 ---
 

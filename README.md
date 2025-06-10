@@ -44,16 +44,24 @@ A full-spectrum Discord moderation and logging bot designed for transparency and
    cargo run
    ```
 
-## DM Commands
+## Commands
+
+### DM Commands
 
 Send these commands via Direct Message to the bot:
 
-- `/help` - Show command list or send mod alert
+- `/help` - Show command list
 - `/kick <@user> [reason]` - Kick a user from all guilds (whitelisted only)
 - `/ban <@user> [reason]` - Ban a user from all guilds (whitelisted only)
 - `/timeout <@user> <minutes> [reason]` - Timeout a user in all guilds (max 28 days, whitelisted only)
 - `/cache [on|off]` - Toggle media caching on or off (whitelisted only)
 - `/whitelist <add|remove> <@user>` - Manage command whitelist (super users only)
+
+### Slash Commands
+
+Available in server channels:
+
+- `/snort` - Snort some brightdust! (tracks global count with configurable cooldown)
 
 **Note**: 
 - Moderation commands now work across ALL guilds where the bot is present
@@ -113,6 +121,20 @@ The bot can download and store media attachments locally. This feature:
 To enable/disable programmatically:
 ```sql
 UPDATE system_settings SET setting_value = 'true' WHERE setting_key = 'cache_media';
+```
+
+## Slash Command Configuration
+
+### Snort Cooldown
+
+The `/snort` command has a configurable global cooldown (default: 30 seconds):
+
+```sql
+-- View current cooldown
+SELECT setting_value FROM system_settings WHERE setting_key = 'snort_cooldown_seconds';
+
+-- Change cooldown (in seconds)
+UPDATE system_settings SET setting_value = '60' WHERE setting_key = 'snort_cooldown_seconds';
 ```
 
 ## Development

@@ -1,7 +1,7 @@
 use crate::db::Database;
 use anyhow::Result;
 use serenity::all::{
-    Colour, Context, CreateEmbed, CreateMessage, EditMember, Message, Timestamp, UserId,
+    Colour, Context, CreateEmbed, CreateMessage, EditMember, Message, UserId,
 };
 use tracing::{error, info};
 
@@ -189,94 +189,49 @@ impl CommandHandler {
         Some("/help")
     }
 
-    async fn handle_help(&self, ctx: &Context, msg: &Message, args: &[&str]) -> Result<()> {
-        if args.is_empty() {
-            let mut help_embed = CreateEmbed::new()
-                .title("Sentinel Help")
-                .description("Available commands (DM only):")
-                .field(
-                    "/help <message>",
-                    "Send a mod alert with your message",
-                    false,
-                )
-                .field(
-                    "/kick <@user> [reason]",
-                    "Kick a user from all guilds (whitelisted only)",
-                    false,
-                )
-                .field(
-                    "/ban <@user> [reason]",
-                    "Ban a user from all guilds (whitelisted only)",
-                    false,
-                )
-                .field(
-                    "/timeout <@user> <duration_minutes> [reason]",
-                    "Timeout a user in all guilds (whitelisted only)",
-                    false,
-                )
-                .field(
-                    "/cache [on|off]",
-                    "Toggle media caching (whitelisted only)",
-                    false,
-                );
-
-            // Add whitelist command for super users
-            if self.db.is_super_user(msg.author.id.get()).await.unwrap_or(false) {
-                help_embed = help_embed.field(
-                    "/whitelist <add|remove> <@user>",
-                    "Manage command whitelist (super users only)",
-                    false,
-                );
-            }
-
-            let help_embed = help_embed.colour(Colour::BLUE);
-
-            self.send_embed_response(ctx, msg, help_embed, "/help", true)
-                .await?;
-        } else {
-            let alert_message = args.join(" ");
-            let alert_embed = CreateEmbed::new()
-                .title("🚨 Help Alert Received")
-                .field(
-                    "From",
-                    &format!("{} ({})", msg.author.name, msg.author.id),
-                    false,
-                )
-                .field("Message", &alert_message, false)
-                .timestamp(Timestamp::now())
-                .colour(Colour::RED);
-
-            let guilds = ctx.cache.guilds();
-            let mut system_channels = Vec::new();
-
-            for guild_id in guilds {
-                if let Some(guild) = ctx.cache.guild(guild_id) {
-                    if let Some(system_channel_id) = guild.system_channel_id {
-                        system_channels.push(system_channel_id);
-                    }
-                }
-            }
-
-            info!(
-                "[HELP ALERT] {} sent help alert: {}",
-                msg.author.id, alert_message
+    async fn handle_help(&self, ctx: &Context, msg: &Message, _args: &[&str]) -> Result<()> {
+        let mut help_embed = CreateEmbed::new()
+            .title("Sentinel Help")
+            .description("Available commands (DM only):")
+            .field(
+                "/help",
+                "Show this command list",
+                false,
+            )
+            .field(
+                "/kick <@user> [reason]",
+                "Kick a user from all guilds (whitelisted only)",
+                false,
+            )
+            .field(
+                "/ban <@user> [reason]",
+                "Ban a user from all guilds (whitelisted only)",
+                false,
+            )
+            .field(
+                "/timeout <@user> <duration_minutes> [reason]",
+                "Timeout a user in all guilds (whitelisted only)",
+                false,
+            )
+            .field(
+                "/cache [on|off]",
+                "Toggle media caching (whitelisted only)",
+                false,
             );
 
-            for channel_id in system_channels {
-                let _ = channel_id
-                    .send_message(&ctx.http, CreateMessage::new().embed(alert_embed.clone()))
-                    .await;
-            }
-
-            self.send_response(
-                ctx,
-                msg,
-                "Your help alert has been sent to moderators.".to_string(),
-                "/help",
-                true,
-            )
-            .await?;
+        // Add whitelist command for super users
+        if self.db.is_super_user(msg.author.id.get()).await.unwrap_or(false) {
+            help_embed = help_embed.field(
+                "/whitelist <add|remove> <@user>",
+                "Manage command whitelist (super users only)",
+                false,
+            );
         }
+
+        let help_embed = help_embed.colour(Colour::BLUE);
+
+        self.send_embed_response(ctx, msg, help_embed, "/help", true)
+            .await?;
 
         Ok(())
     }

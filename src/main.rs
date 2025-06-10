@@ -3,8 +3,9 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use serenity::all::{
-    ChannelType, Context, EventHandler, GatewayIntents, Guild, GuildChannel, GuildId,
-    GuildMemberUpdateEvent, Member, Message, Presence, Ready, User, VoiceState,
+    ChannelType, Command, Context, CreateInteractionResponse, CreateInteractionResponseMessage,
+    EventHandler, GatewayIntents, Guild, GuildChannel, GuildId, GuildMemberUpdateEvent,
+    Interaction, Member, Message, Presence, Ready, User, VoiceState,
 };
 use serenity::async_trait;
 use serenity::client::Client;
@@ -333,11 +334,100 @@ impl EventHandler for Handler {
     async fn ready(&self, ctx: Context, ready: Ready) {
         info!("{} is connected!", ready.user.name);
 
+        // Register slash commands
+        info!("Registering slash commands...");
+        match Command::create_global_command(
+            &ctx.http,
+            serenity::all::CreateCommand::new("snort")
+                .description("Snort some brightdust!"),
+        )
+        .await
+        {
+            Ok(command) => info!("Registered /snort command with ID: {}", command.id),
+            Err(e) => error!("Failed to register /snort command: {}", e),
+        }
+
         let ctx_arc = Arc::new(ctx);
         if let Err(e) =
             jobs::start_background_jobs(ctx_arc, self.db.clone(), self.media_cache.clone()).await
         {
             error!("Failed to start background jobs: {}", e);
+        }
+    }
+
+    async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
+        if let Interaction::Command(command) = interaction {
+            match command.data.name.as_str() {
+                "snort" => {
+                    if let Some(guild_id) = command.guild_id {
+                        // Check cooldown
+                        let cooldown_seconds = self.db.get_snort_cooldown_seconds().await.unwrap_or(30);
+                        let last_snort = self.db.get_last_snort_time().await.unwrap_or(None);
+                        
+                        let can_snort = if let Some(last_time) = last_snort {
+                            let elapsed = chrono::Utc::now() - last_time;
+                            elapsed.num_seconds() >= cooldown_seconds as i64
+                        } else {
+                            true
+                        };
+
+                        let response_content = if can_snort {
+                            // Increment counter
+                            match self.db.increment_snort_counter(command.user.id.get(), guild_id.get()).await {
+                                Ok(count) => {
+                                    info!(
+                                        "[SLASH COMMAND] {} used /snort in guild {} - count is now {}",
+                                        command.user.name, guild_id, count
+                                    );
+                                    format!("We have snorted brightdust {} amount of times", count)
+                                }
+                                Err(e) => {
+                                    error!("Failed to increment snort counter: {}", e);
+                                    "Failed to snort brightdust! Database error.".to_string()
+                                }
+                            }
+                        } else {
+                            let remaining = cooldown_seconds as i64 - (chrono::Utc::now() - last_snort.unwrap()).num_seconds();
+                            format!("Brightdust is still settling! Please wait {} more seconds before snorting again.", remaining)
+                        };
+
+                        // Send response
+                        let response = CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new()
+                                .content(response_content.clone())
+                        );
+
+                        if let Err(e) = command.create_response(&ctx.http, response).await {
+                            error!("Failed to respond to /snort command: {}", e);
+                        }
+
+                        // Log bot response
+                        if let Err(e) = self.db.log_bot_response(
+                            command.user.id.get(),
+                            Some("/snort"),
+                            "slash_command",
+                            &response_content,
+                            true
+                        ).await {
+                            error!("Failed to log bot response: {}", e);
+                        }
+                    } else {
+                        // Not in a guild
+                        let response = CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new()
+                                .content("This command can only be used in a server!")
+                                .ephemeral(true)
+                        );
+
+                        if let Err(e) = command.create_response(&ctx.http, response).await {
+                            error!("Failed to respond to /snort command: {}", e);
+                        }
+                    }
+                }
+                _ => {
+                    error!("Unknown slash command: {}", command.data.name);
+                }
+            }
         }
     }
 
