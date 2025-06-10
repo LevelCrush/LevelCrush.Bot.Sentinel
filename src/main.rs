@@ -1053,11 +1053,13 @@ impl EventHandler for Handler {
                     }
                     "snort" => {
                     if let Some(guild_id) = command.guild_id {
-                        // Check cooldown
-                        let cooldown_seconds = self.db.get_snort_cooldown_seconds().await.unwrap_or(30);
-                        let last_snort = self.db.get_last_snort_time().await.unwrap_or(None);
+                        let user_id = command.user.id.get();
                         
-                        let can_snort = if let Some(last_time) = last_snort {
+                        // Check per-user cooldown
+                        let cooldown_seconds = self.db.get_snort_cooldown_seconds().await.unwrap_or(30);
+                        let user_last_snort = self.db.get_user_last_snort_time(user_id).await.unwrap_or(None);
+                        
+                        let can_snort = if let Some(last_time) = user_last_snort {
                             let elapsed = chrono::Utc::now() - last_time;
                             elapsed.num_seconds() >= cooldown_seconds as i64
                         } else {
@@ -1066,7 +1068,7 @@ impl EventHandler for Handler {
 
                         let response_content = if can_snort {
                             // Increment counter
-                            match self.db.increment_snort_counter(command.user.id.get(), guild_id.get()).await {
+                            match self.db.increment_snort_counter(user_id, guild_id.get()).await {
                                 Ok(count) => {
                                     info!(
                                         "[SLASH COMMAND] {} used /snort in guild {} - count is now {}",
@@ -1080,8 +1082,8 @@ impl EventHandler for Handler {
                                 }
                             }
                         } else {
-                            let remaining = cooldown_seconds as i64 - (chrono::Utc::now() - last_snort.unwrap()).num_seconds();
-                            format!("Brightdust is still settling! Please wait {} more seconds before snorting again.", remaining)
+                            let remaining = cooldown_seconds as i64 - (chrono::Utc::now() - user_last_snort.unwrap()).num_seconds();
+                            format!("Brightdust is still settling! Please wait {} more seconds before you can snort again.", remaining)
                         };
 
                         // Send response
@@ -1096,7 +1098,7 @@ impl EventHandler for Handler {
 
                         // Log bot response
                         if let Err(e) = self.db.log_bot_response(
-                            command.user.id.get(),
+                            user_id,
                             Some("/snort"),
                             "slash_command",
                             &response_content,

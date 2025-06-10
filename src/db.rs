@@ -295,6 +295,19 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
+        // Create user snort cooldowns table
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS user_snort_cooldowns (
+                user_id BIGINT PRIMARY KEY,
+                last_snort_time DATETIME NOT NULL,
+                INDEX idx_last_snort_time (last_snort_time)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 
@@ -721,6 +734,15 @@ impl Database {
             .execute(&self.pool)
             .await?;
 
+        // Update user's last snort time
+        sqlx::query(
+            "INSERT INTO user_snort_cooldowns (user_id, last_snort_time) VALUES (?, NOW()) 
+             ON DUPLICATE KEY UPDATE last_snort_time = NOW()"
+        )
+        .bind(user_id as i64)
+        .execute(&self.pool)
+        .await?;
+
         // Get the new count
         let count = sqlx::query_scalar::<_, i64>(
             "SELECT count FROM snort_counter WHERE id = 1"
@@ -731,10 +753,11 @@ impl Database {
         Ok(count)
     }
 
-    pub async fn get_last_snort_time(&self) -> Result<Option<DateTime<Utc>>> {
+    pub async fn get_user_last_snort_time(&self, user_id: u64) -> Result<Option<DateTime<Utc>>> {
         let result = sqlx::query_scalar::<_, DateTime<Utc>>(
-            "SELECT last_snort_time FROM snort_counter WHERE id = 1"
+            "SELECT last_snort_time FROM user_snort_cooldowns WHERE user_id = ?"
         )
+        .bind(user_id as i64)
         .fetch_optional(&self.pool)
         .await?;
 

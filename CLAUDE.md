@@ -162,6 +162,12 @@ CREATE TABLE snort_counter (
   last_snort_user_id BIGINT,
   last_snort_guild_id BIGINT
 );
+
+-- User snort cooldowns (per-user cooldown tracking)
+CREATE TABLE user_snort_cooldowns (
+  user_id BIGINT PRIMARY KEY,
+  last_snort_time DATETIME NOT NULL
+);
 ```
 
 ---
@@ -198,6 +204,8 @@ All commands are implemented as Discord slash commands:
 | `/snort`                         | Snort brightdust! Tracks global count   | Anyone           |
 
 **User Autocomplete**: All commands that target users (`/kick`, `/ban`, `/timeout`, `/whitelist`) provide autocomplete suggestions from the database. Start typing a username, handle, or nickname to see matching users.
+
+**Snort Cooldown**: The `/snort` command has a per-user cooldown (default: 30 seconds). Each user can only snort once per cooldown period, but multiple users can snort simultaneously.
 
 ### Legacy DM Support
 
