@@ -14,8 +14,10 @@ Key features include:
 - Logging all Discord activity (messages, voice, threads, forums)
 - **Media attachment caching**: Downloads and stores all media locally (toggleable)
 - **Member presence tracking**: Status changes (online/idle/dnd/offline) and activities
+- **Member join/leave tracking**: Logs when users join or leave servers
 - **Nickname monitoring**: Tracks all nickname changes with timestamps
 - **Channel audit logs**: Creation, deletion, and modifications (name, topic, permissions)
+- **Smart command handling**: Suggests correct commands for misspellings
 - Tracking all server users with metadata syncing
 - Background job to keep usernames, nicknames, and handles current
 - Whitelist-restricted moderation commands sent via Direct Message
@@ -123,6 +125,16 @@ CREATE TABLE forum_logs (
   content TEXT,
   created_at DATETIME
 );
+
+-- Direct message logs
+CREATE TABLE dm_logs (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  message_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  content TEXT,
+  command VARCHAR(50),
+  timestamp DATETIME
+);
 ```
 
 ---
@@ -146,20 +158,25 @@ This keeps logs cross-referenced with accurate identity metadata for auditing or
 
 Only accepted via **Direct Messages** to preserve anonymity:
 
-| Command      | Description                             | Access           |
-|--------------|-----------------------------------------|------------------|
-| `/kick`      | Removes user from all connected servers | Whitelisted only |
-| `/ban`       | Bans user from all connected servers    | Whitelisted only |
-| `/timeout`   | Temporarily mutes user in all servers   | Whitelisted only |
-| `/help`      | Sends mod alert (sender is attached)    | Anyone           |
+| Command                          | Description                             | Access           |
+|----------------------------------|-----------------------------------------|------------------|
+| `/kick <@user> [reason]`         | Removes user from all connected servers | Whitelisted only |
+| `/ban <@user> [reason]`          | Bans user from all connected servers    | Whitelisted only |
+| `/timeout <@user> <mins> [reason]` | Temporarily mutes user in all servers   | Whitelisted only |
+| `/help [message]`                | Sends mod alert (sender is attached)    | Anyone           |
 
 User IDs are validated against the `command_whitelist` table.
 
-**Cross-Guild Moderation**: All moderation commands now work across ALL guilds where the bot is present. When a moderator issues a command, the bot will:
-1. Iterate through all connected guilds
-2. Check if the target user is a member of each guild (for kick/timeout)
-3. Apply the moderation action where applicable
-4. Report back with a summary of successes and failures per guild
+**User Identification**: Commands now accept Discord handles instead of user IDs:
+- Username: `john` or `@john`
+- Username with discriminator: `john#1234`
+- Server nickname: `Johnny`
+- The bot searches all guilds to find matching users
+
+**Cross-Guild Moderation**: All moderation commands work across ALL guilds where the bot is present:
+1. Search for the user by handle across all guilds
+2. Apply the moderation action to all applicable guilds
+3. Report back with detailed results per guild
 
 ---
 

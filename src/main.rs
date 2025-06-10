@@ -3,8 +3,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use serenity::all::{
-    ChannelType, Context, EventHandler, GatewayIntents, Guild, GuildChannel,
-    GuildMemberUpdateEvent, Member, Message, Presence, Ready, VoiceState,
+    ChannelType, Context, EventHandler, GatewayIntents, Guild, GuildChannel, GuildId,
+    GuildMemberUpdateEvent, Member, Message, Presence, Ready, User, VoiceState,
 };
 use serenity::async_trait;
 use serenity::client::Client;
@@ -44,10 +44,35 @@ impl EventHandler for Handler {
         }
 
         if msg.guild_id.is_none() {
+            let timestamp = msg.timestamp;
             info!(
-                "[DM COMMAND] {} ({}): {}",
+                "[DM MESSAGE] {} ({}): {}",
                 msg.author.name, msg.author.id, msg.content
             );
+
+            // Extract command if present
+            let command = msg
+                .content
+                .trim()
+                .split_whitespace()
+                .next()
+                .filter(|s| s.starts_with('/'))
+                .map(|s| s.to_string());
+
+            // Log DM to database
+            if let Err(e) = self
+                .db
+                .log_dm_message(
+                    msg.id.get(),
+                    msg.author.id.get(),
+                    &msg.content,
+                    command.as_deref(),
+                    timestamp.to_utc(),
+                )
+                .await
+            {
+                error!("Failed to log DM message: {}", e);
+            }
 
             if let Err(e) = self.command_handler.handle_dm_command(&ctx, &msg).await {
                 error!("Failed to handle DM command: {}", e);
@@ -168,7 +193,7 @@ impl EventHandler for Handler {
         }
     }
 
-    async fn voice_state_update(&self, _ctx: Context, old: Option<VoiceState>, new: VoiceState) {
+    async fn voice_state_update(&self, ctx: Context, old: Option<VoiceState>, new: VoiceState) {
         let user_id = new.user_id.get();
 
         let action = match (&old, &new.channel_id) {
@@ -195,7 +220,27 @@ impl EventHandler for Handler {
         };
 
         if let Some((action, channel_id)) = action {
-            info!("[VOICE] User {} {} channel {}", user_id, action, channel_id);
+            // Get channel name from cache
+            let channel_name = {
+                let channel_id = serenity::all::ChannelId::new(channel_id);
+                let mut name = "Unknown".to_string();
+
+                for guild_id in ctx.cache.guilds() {
+                    if let Some(guild) = ctx.cache.guild(guild_id) {
+                        if let Some(channel) = guild.channels.get(&channel_id) {
+                            name = channel.name.clone();
+                            break;
+                        }
+                    }
+                }
+
+                name
+            };
+
+            info!(
+                "[VOICE] User {} {} channel {} ({})",
+                user_id, action, channel_name, channel_id
+            );
 
             if let Err(e) = self.db.log_voice_event(user_id, channel_id, action).await {
                 error!("Failed to log voice event: {}", e);
@@ -220,9 +265,27 @@ impl EventHandler for Handler {
                     String::new()
                 };
 
+                // Get parent channel name
+                let parent_channel_name = if let Some(parent_id) = thread.parent_id {
+                    let mut name = "Unknown".to_string();
+
+                    for guild_id in ctx.cache.guilds() {
+                        if let Some(guild) = ctx.cache.guild(guild_id) {
+                            if let Some(channel) = guild.channels.get(&parent_id) {
+                                name = channel.name.clone();
+                                break;
+                            }
+                        }
+                    }
+
+                    name
+                } else {
+                    "Unknown".to_string()
+                };
+
                 info!(
-                    "[THREAD] User {} created thread '{}' in channel {}",
-                    owner_id, thread.name, thread.id
+                    "[THREAD] User {} created thread '{}' in channel {} ({})",
+                    owner_id, thread.name, parent_channel_name, thread.id
                 );
 
                 if let Err(e) = self
@@ -278,7 +341,7 @@ impl EventHandler for Handler {
         }
     }
 
-    async fn presence_update(&self, _ctx: Context, new_data: Presence) {
+    async fn presence_update(&self, ctx: Context, new_data: Presence) {
         if let Some(guild_id) = new_data.guild_id {
             let user_id = new_data.user.id.get();
 
@@ -311,9 +374,17 @@ impl EventHandler for Handler {
                 (activity_type, act.name.as_str(), act.details.as_deref())
             });
 
+            // Get guild name from cache
+            let guild_name = ctx
+                .cache
+                .guild(guild_id)
+                .map(|g| g.name.clone())
+                .unwrap_or_else(|| "Unknown".to_string());
+
             info!(
-                "[PRESENCE] User {} in guild {} - Status: {} - Activity: {:?}",
+                "[PRESENCE] User {} in guild {} ({}) - Status: {} - Activity: {:?}",
                 user_id,
+                guild_name,
                 guild_id,
                 status,
                 activity
@@ -339,7 +410,7 @@ impl EventHandler for Handler {
 
     async fn guild_member_update(
         &self,
-        _ctx: Context,
+        ctx: Context,
         old_if_available: Option<Member>,
         new: Option<Member>,
         _event: GuildMemberUpdateEvent,
@@ -351,9 +422,16 @@ impl EventHandler for Handler {
             // Check for nickname changes
             if let Some(old) = old_if_available {
                 if old.nick != new.nick {
+                    // Get guild name from cache
+                    let guild_name = ctx
+                        .cache
+                        .guild(guild_id)
+                        .map(|g| g.name.clone())
+                        .unwrap_or_else(|| "Unknown".to_string());
+
                     info!(
-                        "[NICKNAME] User {} in guild {} changed nickname from {:?} to {:?}",
-                        user_id, guild_id, old.nick, new.nick
+                        "[NICKNAME] User {} in guild {} ({}) changed nickname from {:?} to {:?}",
+                        user_id, guild_name, guild_id, old.nick, new.nick
                     );
 
                     if let Err(e) = self
@@ -397,11 +475,18 @@ impl EventHandler for Handler {
         }
     }
 
-    async fn channel_create(&self, _ctx: Context, channel: GuildChannel) {
+    async fn channel_create(&self, ctx: Context, channel: GuildChannel) {
         let guild_id = channel.guild_id;
+        // Get guild name from cache
+        let guild_name = ctx
+            .cache
+            .guild(guild_id)
+            .map(|g| g.name.clone())
+            .unwrap_or_else(|| "Unknown".to_string());
+
         info!(
-            "[CHANNEL CREATE] Channel '{}' ({}) created in guild {}",
-            channel.name, channel.id, guild_id
+            "[CHANNEL CREATE] Channel '{}' ({}) created in guild {} ({})",
+            channel.name, channel.id, guild_name, guild_id
         );
 
         if let Err(e) = self
@@ -423,14 +508,21 @@ impl EventHandler for Handler {
 
     async fn channel_delete(
         &self,
-        _ctx: Context,
+        ctx: Context,
         channel: GuildChannel,
         _messages: Option<Vec<Message>>,
     ) {
         let guild_id = channel.guild_id;
+        // Get guild name from cache
+        let guild_name = ctx
+            .cache
+            .guild(guild_id)
+            .map(|g| g.name.clone())
+            .unwrap_or_else(|| "Unknown".to_string());
+
         info!(
-            "[CHANNEL DELETE] Channel '{}' ({}) deleted from guild {}",
-            channel.name, channel.id, guild_id
+            "[CHANNEL DELETE] Channel '{}' ({}) deleted from guild {} ({})",
+            channel.name, channel.id, guild_name, guild_id
         );
 
         if let Err(e) = self
@@ -450,17 +542,24 @@ impl EventHandler for Handler {
         }
     }
 
-    async fn channel_update(&self, _ctx: Context, old: Option<GuildChannel>, new: GuildChannel) {
+    async fn channel_update(&self, ctx: Context, old: Option<GuildChannel>, new: GuildChannel) {
         if let Some(old_channel) = old {
             let guild_id = new.guild_id;
             let new_channel = &new;
             let channel_id = new_channel.id.get();
 
+            // Get guild name from cache
+            let guild_name = ctx
+                .cache
+                .guild(guild_id)
+                .map(|g| g.name.clone())
+                .unwrap_or_else(|| "Unknown".to_string());
+
             // Check for name change
             if old_channel.name != new_channel.name {
                 info!(
-                    "[CHANNEL UPDATE] Channel {} name changed from '{}' to '{}' in guild {}",
-                    channel_id, old_channel.name, new_channel.name, guild_id
+                    "[CHANNEL UPDATE] Channel {} name changed from '{}' to '{}' in guild {} ({})",
+                    channel_id, old_channel.name, new_channel.name, guild_name, guild_id
                 );
 
                 if let Err(e) = self
@@ -483,8 +582,8 @@ impl EventHandler for Handler {
             // Check for topic change (text channels)
             if old_channel.topic != new_channel.topic {
                 info!(
-                    "[CHANNEL UPDATE] Channel {} topic changed in guild {}",
-                    channel_id, guild_id
+                    "[CHANNEL UPDATE] Channel {} topic changed in guild {} ({})",
+                    channel_id, guild_name, guild_id
                 );
 
                 if let Err(e) = self
@@ -507,8 +606,8 @@ impl EventHandler for Handler {
             // Check for NSFW status change
             if old_channel.nsfw != new_channel.nsfw {
                 info!(
-                    "[CHANNEL UPDATE] Channel {} NSFW status changed from {} to {} in guild {}",
-                    channel_id, old_channel.nsfw, new_channel.nsfw, guild_id
+                    "[CHANNEL UPDATE] Channel {} NSFW status changed from {} to {} in guild {} ({})",
+                    channel_id, old_channel.nsfw, new_channel.nsfw, guild_name, guild_id
                 );
 
                 if let Err(e) = self
@@ -531,8 +630,8 @@ impl EventHandler for Handler {
             // Check for position change
             if old_channel.position != new_channel.position {
                 info!(
-                    "[CHANNEL UPDATE] Channel {} position changed from {} to {} in guild {}",
-                    channel_id, old_channel.position, new_channel.position, guild_id
+                    "[CHANNEL UPDATE] Channel {} position changed from {} to {} in guild {} ({})",
+                    channel_id, old_channel.position, new_channel.position, guild_name, guild_id
                 );
 
                 if let Err(e) = self
@@ -555,8 +654,8 @@ impl EventHandler for Handler {
             // Check for permission overwrites changes
             if old_channel.permission_overwrites != new_channel.permission_overwrites {
                 info!(
-                    "[CHANNEL UPDATE] Channel {} permissions changed in guild {}",
-                    channel_id, guild_id
+                    "[CHANNEL UPDATE] Channel {} permissions changed in guild {} ({})",
+                    channel_id, guild_name, guild_id
                 );
 
                 if let Err(e) = self
@@ -576,6 +675,62 @@ impl EventHandler for Handler {
                 }
             }
         }
+    }
+
+    async fn guild_member_addition(&self, _ctx: Context, new_member: Member) {
+        let guild_name = new_member
+            .guild_id
+            .to_guild_cached(&_ctx.cache)
+            .map(|g| g.name.clone())
+            .unwrap_or_else(|| "Unknown".to_string());
+
+        info!(
+            "[MEMBER JOIN] {} ({}) joined guild {} ({})",
+            new_member.user.name, new_member.user.id, guild_name, new_member.guild_id
+        );
+
+        // Update user in database
+        let user = &new_member.user;
+        let nickname = new_member.nick.as_deref();
+        let global_handle = if user.discriminator.is_some() {
+            None
+        } else {
+            Some(user.name.as_str())
+        };
+
+        let discriminator = user.discriminator.map(|d| d.get().to_string());
+
+        if let Err(e) = self
+            .db
+            .update_user(
+                user.id.get(),
+                &user.name,
+                discriminator.as_deref(),
+                global_handle,
+                nickname,
+            )
+            .await
+        {
+            error!("Failed to update user on guild join: {}", e);
+        }
+    }
+
+    async fn guild_member_removal(
+        &self,
+        ctx: Context,
+        guild_id: GuildId,
+        user: User,
+        _member_data: Option<Member>,
+    ) {
+        let guild_name = guild_id
+            .to_guild_cached(&ctx.cache)
+            .map(|g| g.name.clone())
+            .unwrap_or_else(|| "Unknown".to_string());
+
+        info!(
+            "[MEMBER LEAVE] {} ({}) left guild {} ({})",
+            user.name, user.id, guild_name, guild_id
+        );
     }
 }
 

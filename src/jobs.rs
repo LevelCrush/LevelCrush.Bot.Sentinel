@@ -101,9 +101,16 @@ async fn sync_all_users(ctx: Arc<Context>, db: Database) -> Result<()> {
         };
 
         // Update database outside of cache lock
+        let guild_name = ctx
+            .cache
+            .guild(guild_id)
+            .map(|g| g.name.clone())
+            .unwrap_or_else(|| "Unknown".to_string());
+
         info!(
-            "Syncing {} members from guild {}",
+            "Syncing {} members from guild {} ({})",
             members_data.len(),
+            guild_name,
             guild_id
         );
 

@@ -5,14 +5,16 @@ A full-spectrum Discord moderation and logging bot designed for transparency and
 ## Features
 
 - **Complete Message Logging**: All messages, edits, and deletions are tracked
+- **DM Logging**: All direct messages to the bot are logged to database
 - **Media Attachment Caching**: Downloads and stores all media attachments locally (toggleable)
 - **Voice Activity Tracking**: Logs joins, leaves, and channel switches
 - **Forum/Thread Monitoring**: Tracks thread creation and content
 - **User Database**: Maintains records of all server users with metadata
 - **Member Presence Tracking**: Logs status changes (online/idle/dnd/offline) and activities
+- **Member Join/Leave Tracking**: Logs when users join or leave servers
 - **Nickname Change Detection**: Tracks all nickname modifications with timestamps
 - **Channel Audit Logging**: Monitors channel creation, deletion, and modifications (name, topic, permissions)
-- **DM-Based Moderation**: Anonymous moderation commands via DMs
+- **DM-Based Moderation**: Anonymous moderation commands via DMs with smart command suggestions
 - **Whitelist System**: Only authorized users can use moderation commands
 - **Background Sync**: Automatic user data synchronization every 12 hours
 - **Media Cleanup**: Automatic deletion of cached media older than 31 days
@@ -45,12 +47,18 @@ A full-spectrum Discord moderation and logging bot designed for transparency and
 Send these commands via Direct Message to the bot:
 
 - `/help` - Show command list or send mod alert
-- `/kick <user_id> [reason]` - Kick a user from all guilds
-- `/ban <user_id> [reason]` - Ban a user from all guilds
-- `/timeout <user_id> <minutes> [reason]` - Timeout a user in all guilds (max 28 days)
+- `/kick <@user> [reason]` - Kick a user from all guilds
+- `/ban <@user> [reason]` - Ban a user from all guilds
+- `/timeout <@user> <minutes> [reason]` - Timeout a user in all guilds (max 28 days)
 - `/cache [on|off]` - Toggle media caching on or off (whitelisted only)
 
-**Note**: Moderation commands now work across ALL guilds where the bot is present. The bot will attempt the action on every guild and report back the results.
+**Note**: 
+- Moderation commands now work across ALL guilds where the bot is present
+- Use Discord handles instead of user IDs (e.g., `@username`, `username#1234`, or server nicknames)
+- The bot will search for users by their username, global handle, or server nickname
+- Results will show success/failure for each guild
+- Invalid commands will receive suggestions for the most likely intended command
+- Common misspellings and aliases are recognized (e.g., "mute" suggests "/timeout")
 
 ## Whitelist Management
 

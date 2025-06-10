@@ -212,6 +212,26 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
+        // DM logs
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS dm_logs (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                message_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                content TEXT,
+                command VARCHAR(50),
+                timestamp DATETIME,
+                INDEX idx_message_id (message_id),
+                INDEX idx_user_id (user_id),
+                INDEX idx_command (command),
+                INDEX idx_timestamp (timestamp)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 
@@ -502,6 +522,31 @@ impl Database {
         .bind(old_value)
         .bind(new_value)
         .bind(actor_id.map(|id| id as i64))
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn log_dm_message(
+        &self,
+        message_id: u64,
+        user_id: u64,
+        content: &str,
+        command: Option<&str>,
+        timestamp: DateTime<Utc>,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO dm_logs (message_id, user_id, content, command, timestamp)
+            VALUES (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(message_id as i64)
+        .bind(user_id as i64)
+        .bind(content)
+        .bind(command)
+        .bind(timestamp)
         .execute(&self.pool)
         .await?;
 
