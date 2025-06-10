@@ -49,6 +49,24 @@ pub async fn start_background_jobs(
     })?;
 
     scheduler.add(media_cleanup_job).await?;
+
+    // Historical message scanning job - runs every hour
+    let db_scan = db.clone();
+    let ctx_scan = ctx.clone();
+
+    let history_scan_job = Job::new_async("0 0 * * * *", move |_uuid, _l| {
+        let db = db_scan.clone();
+        let ctx = ctx_scan.clone();
+        Box::pin(async move {
+            tokio::spawn(async move {
+                if let Err(e) = scan_channel_history(ctx, db).await {
+                    tracing::error!("Failed to scan channel history: {}", e);
+                }
+            });
+        })
+    })?;
+
+    scheduler.add(history_scan_job).await?;
     scheduler.start().await?;
 
     info!("Background jobs started");
@@ -163,4 +181,162 @@ async fn cleanup_old_media(db: Database, media_cache: MediaCache) -> Result<()> 
 
     info!("Media cleanup job completed");
     Ok(())
+}
+
+async fn scan_channel_history(ctx: Arc<Context>, db: Database) -> Result<()> {
+    info!("Starting channel history scan job");
+
+    // Get all accessible channels from cache
+    let mut channels_to_scan = Vec::new();
+    
+    for guild_id in ctx.cache.guilds() {
+        if let Some(guild) = ctx.cache.guild(guild_id) {
+            for (channel_id, channel) in &guild.channels {
+                // Only scan text channels
+                if channel.is_text_based() {
+                    channels_to_scan.push((*channel_id, guild_id));
+                }
+            }
+        }
+    }
+
+    info!("Found {} text channels to potentially scan", channels_to_scan.len());
+
+    // Scan up to 5 channels per run to avoid overwhelming the system
+    let mut scanned_count = 0;
+    const MAX_CHANNELS_PER_RUN: usize = 5;
+
+    for (channel_id, guild_id) in channels_to_scan {
+        if scanned_count >= MAX_CHANNELS_PER_RUN {
+            info!("Reached maximum channels per run ({}), stopping", MAX_CHANNELS_PER_RUN);
+            break;
+        }
+
+        // Check if channel has already been scanned
+        match db.is_channel_scanned(channel_id.get()).await {
+            Ok(true) => {
+                // Already scanned, skip
+                continue;
+            }
+            Ok(false) => {
+                // Not scanned yet, proceed
+            }
+            Err(e) => {
+                tracing::error!("Failed to check scan status for channel {}: {}", channel_id, e);
+                continue;
+            }
+        }
+
+        info!("Scanning historical messages for channel {} in guild {}", channel_id, guild_id);
+
+        // Scan the channel
+        match scan_single_channel(&ctx, &db, channel_id, guild_id).await {
+            Ok(messages_scanned) => {
+                info!("Successfully scanned {} messages from channel {}", messages_scanned, channel_id);
+                scanned_count += 1;
+            }
+            Err(e) => {
+                tracing::error!("Failed to scan channel {}: {}", channel_id, e);
+            }
+        }
+
+        // Add a small delay between channels to avoid rate limiting
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+    }
+
+    info!("Channel history scan job completed. Scanned {} channels", scanned_count);
+    Ok(())
+}
+
+async fn scan_single_channel(
+    ctx: &Context,
+    db: &Database,
+    channel_id: serenity::all::ChannelId,
+    guild_id: serenity::all::GuildId,
+) -> Result<u32> {
+    use serenity::all::GetMessages;
+    
+    let mut total_messages = 0u32;
+    let mut oldest_message_id: Option<u64> = None;
+    let mut last_message_id: Option<serenity::all::MessageId> = None;
+
+    // Scan in batches of 100 messages (Discord API limit)
+    const BATCH_SIZE: u8 = 100;
+    const MAX_MESSAGES: u32 = 10000; // Limit to avoid excessive scanning
+
+    loop {
+        if total_messages >= MAX_MESSAGES {
+            info!("Reached maximum message limit ({}) for channel {}", MAX_MESSAGES, channel_id);
+            break;
+        }
+
+        // Build the request
+        let mut request = GetMessages::new().limit(BATCH_SIZE);
+        if let Some(before_id) = last_message_id {
+            request = request.before(before_id);
+        }
+
+        // Fetch messages
+        let messages = match channel_id.messages(&ctx.http, request).await {
+            Ok(messages) => messages,
+            Err(e) => {
+                // If we get an error (e.g., no permission), mark the channel as scanned anyway
+                tracing::warn!("Error fetching messages from channel {}: {}. Marking as scanned.", channel_id, e);
+                db.mark_channel_scanned(channel_id.get(), guild_id.get(), oldest_message_id, total_messages).await?;
+                return Ok(total_messages);
+            }
+        };
+
+        if messages.is_empty() {
+            // No more messages to fetch
+            break;
+        }
+
+        // Process messages
+        for message in &messages {
+            // Skip bot messages
+            if message.author.bot {
+                continue;
+            }
+
+            // Log the message (without caching media as requested)
+            if let Err(e) = db.log_message(
+                message.id.get(),
+                message.author.id.get(),
+                channel_id.get(),
+                &message.content,
+                message.timestamp.to_utc(),
+            ).await {
+                tracing::error!("Failed to log historical message {}: {}", message.id, e);
+                continue;
+            }
+
+            // Update oldest message ID
+            if oldest_message_id.is_none() || message.id.get() < oldest_message_id.unwrap() {
+                oldest_message_id = Some(message.id.get());
+            }
+
+            total_messages += 1;
+        }
+
+        // Update last_message_id for next batch
+        if let Some(last_msg) = messages.last() {
+            last_message_id = Some(last_msg.id);
+        } else {
+            break;
+        }
+
+        // Log progress
+        if total_messages % 1000 == 0 {
+            info!("Scanned {} messages so far from channel {}", total_messages, channel_id);
+        }
+
+        // Small delay to avoid rate limiting
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    }
+
+    // Mark channel as scanned
+    db.mark_channel_scanned(channel_id.get(), guild_id.get(), oldest_message_id, total_messages).await?;
+
+    Ok(total_messages)
 }

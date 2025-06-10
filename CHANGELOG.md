@@ -5,6 +5,13 @@ All notable changes to Sentinel Discord Bot will be documented in this file.
 ## [Unreleased] - 2025-06-10
 
 ### Added
+- **Historical message scanning** - Background job that scans all channels for historical messages
+  - Runs hourly and scans up to 5 channels per run
+  - Fetches up to 10,000 messages per channel going back as far as Discord allows
+  - Skips bot messages and channels that have already been scanned
+  - Does not cache media attachments for historical messages
+  - Tracks scan progress in `channel_scan_history` table
+  - Handles rate limiting and permission errors gracefully
 - **Per-user cooldowns for `/snort` command** - Each user now has their own independent cooldown timer (default: 30 seconds)
   - Multiple users can snort simultaneously without blocking each other
   - Added `user_snort_cooldowns` table to track individual cooldowns

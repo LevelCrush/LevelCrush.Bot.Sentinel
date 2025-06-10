@@ -306,6 +306,23 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
+        // Create channel scan history table to track which channels have been scanned for historical messages
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS channel_scan_history (
+                channel_id BIGINT PRIMARY KEY,
+                guild_id BIGINT NOT NULL,
+                scan_completed_at DATETIME NOT NULL,
+                oldest_message_id BIGINT,
+                messages_scanned INT DEFAULT 0,
+                INDEX idx_guild_id (guild_id),
+                INDEX idx_scan_completed_at (scan_completed_at)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 
@@ -779,5 +796,66 @@ impl Database {
             .unwrap_or(30);
 
         Ok(result)
+    }
+
+    pub async fn is_channel_scanned(&self, channel_id: u64) -> Result<bool> {
+        let result = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM channel_scan_history WHERE channel_id = ?",
+        )
+        .bind(channel_id as i64)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(result > 0)
+    }
+
+    pub async fn mark_channel_scanned(
+        &self,
+        channel_id: u64,
+        guild_id: u64,
+        oldest_message_id: Option<u64>,
+        messages_scanned: u32,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO channel_scan_history (channel_id, guild_id, scan_completed_at, oldest_message_id, messages_scanned)
+            VALUES (?, ?, NOW(), ?, ?)
+            "#,
+        )
+        .bind(channel_id as i64)
+        .bind(guild_id as i64)
+        .bind(oldest_message_id.map(|id| id as i64))
+        .bind(messages_scanned as i32)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn get_unscanned_channels(&self) -> Result<Vec<(u64, u64)>> {
+        // This method will be used by the background job to find channels that haven't been scanned
+        // Using runtime query to avoid compile-time verification issues
+        let results: Vec<(i64, i64)> = sqlx::query_as(
+            r#"
+            SELECT DISTINCT mc.channel_id, mc.guild_id
+            FROM (
+                SELECT DISTINCT channel_id, 
+                       (SELECT guild_id FROM channel_logs WHERE channel_id = ml.channel_id LIMIT 1) as guild_id
+                FROM message_logs ml
+                UNION
+                SELECT DISTINCT channel_id, guild_id
+                FROM channel_logs
+            ) mc
+            LEFT JOIN channel_scan_history csh ON mc.channel_id = csh.channel_id
+            WHERE csh.channel_id IS NULL AND mc.guild_id IS NOT NULL
+            "#
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(results
+            .into_iter()
+            .map(|(channel_id, guild_id)| (channel_id as u64, guild_id as u64))
+            .collect())
     }
 }
