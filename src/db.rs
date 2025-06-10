@@ -252,6 +252,20 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
+        // Super user whitelist
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS super_user_whitelist (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                discord_user_id BIGINT UNIQUE NOT NULL,
+                added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_discord_user_id (discord_user_id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 
@@ -352,8 +366,25 @@ impl Database {
     }
 
     pub async fn is_whitelisted(&self, user_id: u64) -> Result<bool> {
+        // Check if user is a super user first
+        if self.is_super_user(user_id).await? {
+            return Ok(true);
+        }
+
+        // Check regular whitelist
         let result = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM command_whitelist WHERE discord_user_id = ?",
+        )
+        .bind(user_id as i64)
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(result > 0)
+    }
+
+    pub async fn is_super_user(&self, user_id: u64) -> Result<bool> {
+        let result = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM super_user_whitelist WHERE discord_user_id = ?",
         )
         .bind(user_id as i64)
         .fetch_one(&self.pool)
@@ -373,6 +404,24 @@ impl Database {
 
     pub async fn remove_from_whitelist(&self, user_id: u64) -> Result<()> {
         sqlx::query("DELETE FROM command_whitelist WHERE discord_user_id = ?")
+            .bind(user_id as i64)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn add_to_super_whitelist(&self, user_id: u64) -> Result<()> {
+        sqlx::query("INSERT IGNORE INTO super_user_whitelist (discord_user_id) VALUES (?)")
+            .bind(user_id as i64)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn remove_from_super_whitelist(&self, user_id: u64) -> Result<()> {
+        sqlx::query("DELETE FROM super_user_whitelist WHERE discord_user_id = ?")
             .bind(user_id as i64)
             .execute(&self.pool)
             .await?;

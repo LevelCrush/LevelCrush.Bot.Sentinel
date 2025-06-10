@@ -96,6 +96,13 @@ CREATE TABLE command_whitelist (
   added_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Super user whitelist
+CREATE TABLE super_user_whitelist (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  discord_user_id BIGINT UNIQUE NOT NULL,
+  added_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Message logs
 CREATE TABLE message_logs (
   id INT PRIMARY KEY AUTO_INCREMENT,
@@ -174,9 +181,16 @@ Only accepted via **Direct Messages** to preserve anonymity:
 | `/kick <@user> [reason]`         | Removes user from all connected servers | Whitelisted only |
 | `/ban <@user> [reason]`          | Bans user from all connected servers    | Whitelisted only |
 | `/timeout <@user> <mins> [reason]` | Temporarily mutes user in all servers   | Whitelisted only |
+| `/cache [on|off]`                | Toggle media caching                    | Whitelisted only |
+| `/whitelist <add|remove> <@user>`| Manage command whitelist                | Super users only |
 | `/help [message]`                | Sends mod alert (sender is attached)    | Anyone           |
 
-User IDs are validated against the `command_whitelist` table.
+User permissions are validated against the `command_whitelist` and `super_user_whitelist` tables.
+
+**Permission Hierarchy**:
+1. **Super Users**: All commands + whitelist management
+2. **Whitelisted Users**: All moderation commands
+3. **Regular Users**: `/help` command only
 
 **User Identification**: Commands now accept Discord handles instead of user IDs:
 - Username: `john` or `@john`

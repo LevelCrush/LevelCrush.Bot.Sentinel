@@ -136,6 +136,7 @@ impl CommandHandler {
             "/ban" => self.handle_ban(ctx, msg, &parts[1..]).await?,
             "/timeout" => self.handle_timeout(ctx, msg, &parts[1..]).await?,
             "/cache" => self.handle_cache_toggle(ctx, msg, &parts[1..]).await?,
+            "/whitelist" => self.handle_whitelist(ctx, msg, &parts[1..]).await?,
             _ => {
                 // Suggest the most appropriate command
                 let suggestion = self.suggest_command(&command);
@@ -162,6 +163,7 @@ impl CommandHandler {
             ("/ban", vec!["ban", "bann", "block"]),
             ("/timeout", vec!["timeout", "mute", "silence", "quiet"]),
             ("/cache", vec!["cache", "cash", "media"]),
+            ("/whitelist", vec!["whitelist", "wl", "white", "list"]),
         ];
 
         // Check if the input (without /) matches any known aliases
@@ -189,7 +191,7 @@ impl CommandHandler {
 
     async fn handle_help(&self, ctx: &Context, msg: &Message, args: &[&str]) -> Result<()> {
         if args.is_empty() {
-            let help_embed = CreateEmbed::new()
+            let mut help_embed = CreateEmbed::new()
                 .title("Sentinel Help")
                 .description("Available commands (DM only):")
                 .field(
@@ -216,8 +218,18 @@ impl CommandHandler {
                     "/cache [on|off]",
                     "Toggle media caching (whitelisted only)",
                     false,
-                )
-                .colour(Colour::BLUE);
+                );
+
+            // Add whitelist command for super users
+            if self.db.is_super_user(msg.author.id.get()).await.unwrap_or(false) {
+                help_embed = help_embed.field(
+                    "/whitelist <add|remove> <@user>",
+                    "Manage command whitelist (super users only)",
+                    false,
+                );
+            }
+
+            let help_embed = help_embed.colour(Colour::BLUE);
 
             self.send_embed_response(ctx, msg, help_embed, "/help", true)
                 .await?;
@@ -785,6 +797,160 @@ impl CommandHandler {
                     )
                     .await?;
                 }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_whitelist(&self, ctx: &Context, msg: &Message, args: &[&str]) -> Result<()> {
+        // Only super users can manage the whitelist
+        if !self.db.is_super_user(msg.author.id.get()).await? {
+            self.send_response(
+                ctx,
+                msg,
+                "You are not authorized to use this command. Only super users can manage the whitelist.".to_string(),
+                "/whitelist",
+                false,
+            )
+            .await?;
+            return Ok(());
+        }
+
+        if args.is_empty() {
+            self.send_response(
+                ctx,
+                msg,
+                "Usage: /whitelist <add|remove> <@user>".to_string(),
+                "/whitelist",
+                false,
+            )
+            .await?;
+            return Ok(());
+        }
+
+        let action = args[0].to_lowercase();
+        
+        match action.as_str() {
+            "add" => {
+                if args.len() < 2 {
+                    self.send_response(
+                        ctx,
+                        msg,
+                        "Usage: /whitelist add <@user>".to_string(),
+                        "/whitelist",
+                        false,
+                    )
+                    .await?;
+                    return Ok(());
+                }
+
+                let user_handle = args[1];
+                if let Some((user_id, user_tag)) = self.find_user_by_handle(ctx, user_handle).await {
+                    // Check if they're already whitelisted
+                    if self.db.is_whitelisted(user_id.get()).await? {
+                        self.send_response(
+                            ctx,
+                            msg,
+                            format!("User {} is already whitelisted.", user_tag),
+                            "/whitelist",
+                            false,
+                        )
+                        .await?;
+                    } else {
+                        self.db.add_to_whitelist(user_id.get()).await?;
+                        info!(
+                            "[WHITELIST] {} added {} ({}) to whitelist",
+                            msg.author.id, user_tag, user_id
+                        );
+                        
+                        self.send_response(
+                            ctx,
+                            msg,
+                            format!("Successfully added {} to the whitelist.", user_tag),
+                            "/whitelist",
+                            true,
+                        )
+                        .await?;
+                    }
+                } else {
+                    self.send_response(
+                        ctx,
+                        msg,
+                        format!(
+                            "User '{}' not found. Please use their username, @handle, or server nickname.",
+                            user_handle
+                        ),
+                        "/whitelist",
+                        false,
+                    )
+                    .await?;
+                }
+            }
+            "remove" => {
+                if args.len() < 2 {
+                    self.send_response(
+                        ctx,
+                        msg,
+                        "Usage: /whitelist remove <@user>".to_string(),
+                        "/whitelist",
+                        false,
+                    )
+                    .await?;
+                    return Ok(());
+                }
+
+                let user_handle = args[1];
+                if let Some((user_id, user_tag)) = self.find_user_by_handle(ctx, user_handle).await {
+                    // Don't allow removing super users
+                    if self.db.is_super_user(user_id.get()).await? {
+                        self.send_response(
+                            ctx,
+                            msg,
+                            format!("Cannot remove {} from whitelist as they are a super user.", user_tag),
+                            "/whitelist",
+                            false,
+                        )
+                        .await?;
+                    } else {
+                        self.db.remove_from_whitelist(user_id.get()).await?;
+                        info!(
+                            "[WHITELIST] {} removed {} ({}) from whitelist",
+                            msg.author.id, user_tag, user_id
+                        );
+                        
+                        self.send_response(
+                            ctx,
+                            msg,
+                            format!("Successfully removed {} from the whitelist.", user_tag),
+                            "/whitelist",
+                            true,
+                        )
+                        .await?;
+                    }
+                } else {
+                    self.send_response(
+                        ctx,
+                        msg,
+                        format!(
+                            "User '{}' not found. Please use their username, @handle, or server nickname.",
+                            user_handle
+                        ),
+                        "/whitelist",
+                        false,
+                    )
+                    .await?;
+                }
+            }
+            _ => {
+                self.send_response(
+                    ctx,
+                    msg,
+                    "Usage: /whitelist <add|remove> <@user>".to_string(),
+                    "/whitelist",
+                    false,
+                )
+                .await?;
             }
         }
 

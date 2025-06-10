@@ -49,10 +49,11 @@ A full-spectrum Discord moderation and logging bot designed for transparency and
 Send these commands via Direct Message to the bot:
 
 - `/help` - Show command list or send mod alert
-- `/kick <@user> [reason]` - Kick a user from all guilds
-- `/ban <@user> [reason]` - Ban a user from all guilds
-- `/timeout <@user> <minutes> [reason]` - Timeout a user in all guilds (max 28 days)
+- `/kick <@user> [reason]` - Kick a user from all guilds (whitelisted only)
+- `/ban <@user> [reason]` - Ban a user from all guilds (whitelisted only)
+- `/timeout <@user> <minutes> [reason]` - Timeout a user in all guilds (max 28 days, whitelisted only)
 - `/cache [on|off]` - Toggle media caching on or off (whitelisted only)
+- `/whitelist <add|remove> <@user>` - Manage command whitelist (super users only)
 
 **Note**: 
 - Moderation commands now work across ALL guilds where the bot is present
@@ -64,11 +65,28 @@ Send these commands via Direct Message to the bot:
 
 ## Whitelist Management
 
-To add users to the moderation whitelist, insert their Discord user ID into the `command_whitelist` table:
+### Super Users
+Super users have full access to all moderation commands and can manage the regular command whitelist. They cannot be removed from the whitelist by other super users.
 
+To add a super user:
 ```sql
-INSERT INTO command_whitelist (discord_user_id) VALUES (123456789012345678);
+INSERT INTO super_user_whitelist (discord_user_id) VALUES (123456789012345678);
 ```
+
+### Regular Whitelist
+Regular whitelisted users can use moderation commands but cannot manage the whitelist.
+
+To add users to the moderation whitelist:
+- **Via SQL**: 
+  ```sql
+  INSERT INTO command_whitelist (discord_user_id) VALUES (123456789012345678);
+  ```
+- **Via Bot Command** (super users only): `/whitelist add @username`
+
+### Permission Hierarchy
+1. **Super Users**: All moderation commands + whitelist management
+2. **Whitelisted Users**: All moderation commands
+3. **Regular Users**: `/help` command only
 
 ## Required Bot Permissions
 
