@@ -7,3 +7,5 @@ Cargo.lock
 /logs
 sentinel-pi5
 Dockerfile.pi5
+/memes/snort/*
+!/memes/snort/README.md

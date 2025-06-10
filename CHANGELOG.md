@@ -20,6 +20,12 @@ All notable changes to Sentinel Discord Bot will be documented in this file.
   - Written numbers like "four times", "five times" up to twenty
   - Numeric format for larger numbers
 
+- **Snort meme attachments** - The `/snort` command now attaches a random meme image
+  - Reads images from `memes/snort` directory
+  - Supports jpg, png, gif, and webp formats
+  - Directory created automatically on startup
+  - Memes directory excluded from version control
+
 ### Changed
 - **Migrated all commands to Discord slash commands** - Modern Discord integration
   - `/help` - Shows available commands with permission-based visibility

@@ -1,9 +1,10 @@
 use std::env;
+use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
 use serenity::all::{
-    ChannelType, Colour, Command, Context, CreateEmbed, CreateInteractionResponse,
+    ChannelType, Colour, Command, Context, CreateAttachment, CreateEmbed, CreateInteractionResponse,
     CreateInteractionResponseMessage, EditMember, EventHandler, GatewayIntents, Guild,
     GuildChannel, GuildId, GuildMemberUpdateEvent, Interaction, Member, Message, Presence, Ready,
     User, VoiceState,
@@ -67,6 +68,49 @@ impl Handler {
             ),
             _ => format!("{} times", count), // For larger numbers, use numeric format
         }
+    }
+
+    async fn get_random_snort_meme() -> Option<std::path::PathBuf> {
+        let memes_dir = Path::new("memes/snort");
+        
+        // Create directory if it doesn't exist
+        if !memes_dir.exists() {
+            if let Err(e) = tokio::fs::create_dir_all(memes_dir).await {
+                error!("Failed to create memes/snort directory: {}", e);
+                return None;
+            }
+        }
+        
+        // Get list of image files
+        let valid_extensions = ["jpg", "jpeg", "png", "gif", "webp"];
+        let mut entries = match tokio::fs::read_dir(memes_dir).await {
+            Ok(entries) => entries,
+            Err(e) => {
+                error!("Failed to read memes/snort directory: {}", e);
+                return None;
+            }
+        };
+        
+        let mut image_files = Vec::new();
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(extension) = path.extension() {
+                    if valid_extensions.contains(&extension.to_str().unwrap_or("").to_lowercase().as_str()) {
+                        image_files.push(path);
+                    }
+                }
+            }
+        }
+        
+        if image_files.is_empty() {
+            info!("No meme images found in memes/snort directory");
+            return None;
+        }
+        
+        // Select random image
+        use rand::seq::SliceRandom;
+        image_files.choose(&mut rand::thread_rng()).cloned()
     }
 
     async fn handle_help_slash(&self, ctx: &Context, command: &serenity::all::CommandInteraction) {
@@ -1437,11 +1481,26 @@ impl EventHandler for Handler {
                                 format!("Brightdust is still settling! Please wait {} more seconds before you can snort again.", remaining)
                             };
 
-                            // Send response
-                            let response = CreateInteractionResponse::Message(
-                                CreateInteractionResponseMessage::new()
-                                    .content(response_content.clone()),
-                            );
+                            // Send response with meme if available
+                            let mut response_message = CreateInteractionResponseMessage::new()
+                                .content(response_content.clone());
+                            
+                            // Add random meme if available
+                            if let Some(meme_path) = Self::get_random_snort_meme().await {
+                                if let Ok(file_contents) = tokio::fs::read(&meme_path).await {
+                                    let filename = meme_path
+                                        .file_name()
+                                        .and_then(|name| name.to_str())
+                                        .unwrap_or("snort_meme.png");
+                                    
+                                    let attachment = CreateAttachment::bytes(file_contents, filename);
+                                    response_message = response_message.add_file(attachment);
+                                    
+                                    info!("Attached snort meme: {}", meme_path.display());
+                                }
+                            }
+                            
+                            let response = CreateInteractionResponse::Message(response_message);
 
                             if let Err(e) = command.create_response(&ctx.http, response).await {
                                 error!("Failed to respond to /snort command: {}", e);
@@ -1929,6 +1988,9 @@ async fn main() -> Result<()> {
     info!("Setting up media cache...");
     let media_cache = MediaCache::new("./media_cache");
     media_cache.ensure_directories().await?;
+
+    info!("Setting up memes directory...");
+    tokio::fs::create_dir_all("memes/snort").await?;
 
     let intents = GatewayIntents::GUILDS
         | GatewayIntents::GUILD_MESSAGES
