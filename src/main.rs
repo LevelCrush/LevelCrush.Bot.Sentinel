@@ -2294,7 +2294,8 @@ async fn main() -> Result<()> {
         | GatewayIntents::DIRECT_MESSAGES
         | GatewayIntents::GUILD_MESSAGE_TYPING
         | GatewayIntents::GUILD_PRESENCES
-        | GatewayIntents::GUILD_SCHEDULED_EVENTS;
+        | GatewayIntents::GUILD_SCHEDULED_EVENTS
+        | GatewayIntents::GUILD_MESSAGE_POLLS;
 
     let handler = Handler::new(db.clone(), media_cache.clone());
 

@@ -343,6 +343,9 @@ GatewayIntents::GUILDS
     | GatewayIntents::GUILD_VOICE_STATES
     | GatewayIntents::GUILD_MEMBERS
     | GatewayIntents::DIRECT_MESSAGES
+    | GatewayIntents::GUILD_MESSAGE_POLLS
+    | GatewayIntents::GUILD_SCHEDULED_EVENTS
+    | GatewayIntents::GUILD_PRESENCES
 ```
 
 ---
