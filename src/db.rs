@@ -452,6 +452,77 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
+        // Media recommendations tracking
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS media_recommendations (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                message_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                channel_id BIGINT NOT NULL,
+                guild_id BIGINT NOT NULL,
+                media_type ENUM('anime', 'tv_show', 'movie', 'game', 'youtube', 'music', 'other') NOT NULL,
+                title VARCHAR(500),
+                url TEXT,
+                confidence_score FLOAT DEFAULT 0.0,
+                extracted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                message_timestamp DATETIME NOT NULL,
+                UNIQUE KEY unique_message_media (message_id, media_type, title),
+                INDEX idx_media_type (media_type),
+                INDEX idx_user_id (user_id),
+                INDEX idx_extracted_at (extracted_at),
+                INDEX idx_confidence (confidence_score)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Track last scanned message for incremental scanning
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS media_scan_checkpoint (
+                id INT PRIMARY KEY DEFAULT 1,
+                last_scanned_message_id BIGINT NOT NULL DEFAULT 0,
+                last_scan_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+                messages_scanned INT DEFAULT 0,
+                recommendations_found INT DEFAULT 0
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Initialize checkpoint if not exists
+        sqlx::query(
+            "INSERT IGNORE INTO media_scan_checkpoint (id) VALUES (1)"
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // User watchlist table
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS user_watchlist (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                user_id BIGINT NOT NULL,
+                media_type ENUM('anime', 'tv_show', 'movie', 'game', 'youtube', 'music', 'other') NOT NULL,
+                title VARCHAR(500) NOT NULL,
+                url TEXT,
+                priority INT DEFAULT 50,
+                status ENUM('plan_to_watch', 'watching', 'completed', 'dropped', 'on_hold') DEFAULT 'plan_to_watch',
+                added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                notes TEXT,
+                UNIQUE KEY unique_user_media (user_id, media_type, title),
+                INDEX idx_user_priority (user_id, priority DESC),
+                INDEX idx_user_status (user_id, status)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 
@@ -1212,6 +1283,258 @@ impl Database {
             .await?;
 
         Ok(result.rows_affected())
+    }
+
+    pub async fn log_media_recommendation(
+        &self,
+        message_id: u64,
+        user_id: u64,
+        channel_id: u64,
+        guild_id: u64,
+        media_type: &str,
+        title: &str,
+        url: Option<&str>,
+        confidence: f32,
+        message_timestamp: DateTime<Utc>,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT IGNORE INTO media_recommendations 
+            (message_id, user_id, channel_id, guild_id, media_type, title, url, confidence_score, message_timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(message_id as i64)
+        .bind(user_id as i64)
+        .bind(channel_id as i64)
+        .bind(guild_id as i64)
+        .bind(media_type)
+        .bind(title)
+        .bind(url)
+        .bind(confidence)
+        .bind(message_timestamp)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn get_media_scan_checkpoint(&self) -> Result<(u64, DateTime<Utc>)> {
+        let row: (i64, DateTime<Utc>) = sqlx::query_as(
+            "SELECT last_scanned_message_id, last_scan_time FROM media_scan_checkpoint WHERE id = 1"
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        
+        Ok((row.0 as u64, row.1))
+    }
+
+    pub async fn update_media_scan_checkpoint(
+        &self,
+        last_message_id: u64,
+        messages_scanned: u32,
+        recommendations_found: u32,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE media_scan_checkpoint 
+            SET last_scanned_message_id = ?, 
+                last_scan_time = NOW(),
+                messages_scanned = messages_scanned + ?,
+                recommendations_found = recommendations_found + ?
+            WHERE id = 1
+            "#,
+        )
+        .bind(last_message_id as i64)
+        .bind(messages_scanned as i32)
+        .bind(recommendations_found as i32)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn get_unscanned_messages(&self, last_id: u64, limit: u32) -> Result<Vec<(u64, u64, u64, u64, String, DateTime<Utc>)>> {
+        let messages: Vec<(i64, i64, i64, i64, String, DateTime<Utc>)> = sqlx::query_as(
+            r#"
+            SELECT ml.message_id, ml.user_id, ml.channel_id, 
+                   COALESCE(cl.guild_id, 0) as guild_id,
+                   ml.content, ml.timestamp
+            FROM message_logs ml
+            LEFT JOIN channel_logs cl ON ml.channel_id = cl.channel_id 
+                AND cl.action = 'create'
+            WHERE ml.message_id > ? 
+                AND ml.content IS NOT NULL 
+                AND ml.content != ''
+            ORDER BY ml.message_id ASC
+            LIMIT ?
+            "#
+        )
+        .bind(last_id as i64)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(messages.into_iter().map(|(msg_id, user_id, channel_id, guild_id, content, timestamp)| {
+            (msg_id as u64, user_id as u64, channel_id as u64, guild_id as u64, content, timestamp)
+        }).collect())
+    }
+
+    // Watchlist methods
+    pub async fn add_to_watchlist(
+        &self,
+        user_id: u64,
+        media_type: &str,
+        title: &str,
+        url: Option<&str>,
+        priority: Option<i32>,
+        notes: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO user_watchlist (user_id, media_type, title, url, priority, notes)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE 
+                url = COALESCE(VALUES(url), url),
+                priority = COALESCE(VALUES(priority), priority),
+                notes = COALESCE(VALUES(notes), notes),
+                updated_at = NOW()
+            "#,
+        )
+        .bind(user_id as i64)
+        .bind(media_type)
+        .bind(title)
+        .bind(url)
+        .bind(priority.unwrap_or(50))
+        .bind(notes)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn remove_from_watchlist(
+        &self,
+        user_id: u64,
+        media_type: &str,
+        title: &str,
+    ) -> Result<bool> {
+        let result = sqlx::query(
+            "DELETE FROM user_watchlist WHERE user_id = ? AND media_type = ? AND title = ?"
+        )
+        .bind(user_id as i64)
+        .bind(media_type)
+        .bind(title)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn update_watchlist_priority(
+        &self,
+        user_id: u64,
+        media_type: &str,
+        title: &str,
+        priority: i32,
+    ) -> Result<bool> {
+        let result = sqlx::query(
+            r#"
+            UPDATE user_watchlist 
+            SET priority = ?, updated_at = NOW()
+            WHERE user_id = ? AND media_type = ? AND title = ?
+            "#,
+        )
+        .bind(priority)
+        .bind(user_id as i64)
+        .bind(media_type)
+        .bind(title)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn get_user_watchlist(
+        &self,
+        user_id: u64,
+        limit: u32,
+    ) -> Result<Vec<(String, String, Option<String>, i32, String)>> {
+        let items: Vec<(String, String, Option<String>, i32, String)> = sqlx::query_as(
+            r#"
+            SELECT media_type, title, url, priority, status
+            FROM user_watchlist
+            WHERE user_id = ? AND status IN ('plan_to_watch', 'watching')
+            ORDER BY priority DESC, updated_at DESC
+            LIMIT ?
+            "#,
+        )
+        .bind(user_id as i64)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(items)
+    }
+
+    pub async fn get_top_recommendations(
+        &self,
+        limit: u32,
+        days: i32,
+    ) -> Result<Vec<(String, String, f32, i64, Option<String>)>> {
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(days as i64);
+        
+        let items: Vec<(String, String, f32, i64, Option<String>)> = sqlx::query_as(
+            r#"
+            SELECT 
+                media_type,
+                title,
+                AVG(confidence_score) as avg_confidence,
+                COUNT(*) as mention_count,
+                MAX(url) as sample_url
+            FROM media_recommendations
+            WHERE message_timestamp > ?
+            GROUP BY media_type, title
+            HAVING COUNT(*) >= 2
+            ORDER BY COUNT(*) DESC, AVG(confidence_score) DESC
+            LIMIT ?
+            "#,
+        )
+        .bind(cutoff)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(items)
+    }
+
+    pub async fn search_recommendations(
+        &self,
+        query: &str,
+        limit: u32,
+    ) -> Result<Vec<(String, String, f32, i64)>> {
+        let search_pattern = format!("%{}%", query);
+        
+        let items: Vec<(String, String, f32, i64)> = sqlx::query_as(
+            r#"
+            SELECT 
+                media_type,
+                title,
+                AVG(confidence_score) as avg_confidence,
+                COUNT(*) as mention_count
+            FROM media_recommendations
+            WHERE title LIKE ?
+            GROUP BY media_type, title
+            ORDER BY COUNT(*) DESC, AVG(confidence_score) DESC
+            LIMIT ?
+            "#,
+        )
+        .bind(search_pattern)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(items)
     }
 
     pub async fn cleanup_old_logs(&self, days: i64) -> Result<(u64, u64, u64, u64, u64)> {

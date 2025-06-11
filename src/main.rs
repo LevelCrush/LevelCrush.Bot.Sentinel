@@ -18,6 +18,7 @@ mod commands;
 mod db;
 mod jobs;
 mod media;
+mod media_detector;
 
 use commands::CommandHandler;
 use db::Database;
@@ -144,7 +145,12 @@ impl Handler {
                 "Toggle or check media caching (whitelisted only)",
                 false,
             )
-            .field("/snort", "Snort some brightdust!", false);
+            .field("/snort", "Snort some brightdust!", false)
+            .field(
+                "/watchlist",
+                "Manage your media watchlist and view recommendations",
+                false,
+            );
 
         if is_super_user {
             embed = embed.field(
@@ -882,6 +888,413 @@ impl Handler {
         }
     }
 
+    async fn handle_watchlist_slash(&self, ctx: &Context, command: &serenity::all::CommandInteraction) {
+        let user_id = command.user.id.get();
+        
+        // Get the subcommand
+        let subcommand_opt = command.data.options.first();
+        if subcommand_opt.is_none() {
+            let response = CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("No subcommand provided")
+                    .ephemeral(true),
+            );
+            command.create_response(&ctx.http, response).await.ok();
+            return;
+        }
+        
+        let subcommand = &subcommand_opt.unwrap().name;
+        let subcommand_value = &subcommand_opt.unwrap().value;
+        
+        match subcommand.as_str() {
+            "view" => {
+                let view_type = if let serenity::all::CommandDataOptionValue::SubCommand(opts) = subcommand_value {
+                    opts.iter()
+                        .find(|o| o.name == "type")
+                        .and_then(|o| o.value.as_str())
+                        .unwrap_or("mine")
+                } else {
+                    "mine"
+                };
+                
+                if view_type == "mine" {
+                    // Show user's watchlist
+                    match self.db.get_user_watchlist(user_id, 10).await {
+                        Ok(items) if !items.is_empty() => {
+                            let mut embed = CreateEmbed::new()
+                                .title("Your Watchlist")
+                                .colour(Colour::BLUE);
+                            
+                            for (media_type, title, url, priority, status) in items {
+                                let field_value = format!(
+                                    "Type: {} | Priority: {} | Status: {}{}",
+                                    media_type,
+                                    priority,
+                                    status,
+                                    url.as_ref().map(|u| format!("\n[Link]({})", u)).unwrap_or_default()
+                                );
+                                embed = embed.field(title, field_value, false);
+                            }
+                            
+                            let response = CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .embed(embed)
+                                    .ephemeral(true),
+                            );
+                            command.create_response(&ctx.http, response).await.ok();
+                        }
+                        Ok(_) => {
+                            let response = CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content("Your watchlist is empty! Use `/watchlist add` to add items.")
+                                    .ephemeral(true),
+                            );
+                            command.create_response(&ctx.http, response).await.ok();
+                        }
+                        Err(e) => {
+                            error!("Failed to get watchlist: {}", e);
+                            let response = CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content("Failed to retrieve your watchlist.")
+                                    .ephemeral(true),
+                            );
+                            command.create_response(&ctx.http, response).await.ok();
+                        }
+                    }
+                } else {
+                    // Show top recommendations
+                    match self.db.get_top_recommendations(10, 7).await {
+                        Ok(items) if !items.is_empty() => {
+                            let mut embed = CreateEmbed::new()
+                                .title("🔥 Top Media Recommendations (Past Week)")
+                                .description("Based on what everyone's talking about!")
+                                .colour(Colour::GOLD);
+                            
+                            for (media_type, title, avg_confidence, mentions, url) in items {
+                                let emoji = match media_type.as_str() {
+                                    "anime" => "🎌",
+                                    "tv_show" => "📺",
+                                    "movie" => "🎬",
+                                    "game" => "🎮",
+                                    "youtube" => "📹",
+                                    "music" => "🎵",
+                                    _ => "📋",
+                                };
+                                
+                                let field_value = format!(
+                                    "{} {} | Mentioned {} times{}",
+                                    emoji,
+                                    media_type,
+                                    mentions,
+                                    url.as_ref().map(|u| format!("\n[Link]({})", u)).unwrap_or_default()
+                                );
+                                embed = embed.field(title, field_value, false);
+                            }
+                            
+                            let response = CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .embed(embed),
+                            );
+                            command.create_response(&ctx.http, response).await.ok();
+                        }
+                        Ok(_) => {
+                            let response = CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content("No recommendations found yet. The bot needs to scan more messages!")
+                                    .ephemeral(true),
+                            );
+                            command.create_response(&ctx.http, response).await.ok();
+                        }
+                        Err(e) => {
+                            error!("Failed to get recommendations: {}", e);
+                            let response = CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content("Failed to retrieve recommendations.")
+                                    .ephemeral(true),
+                            );
+                            command.create_response(&ctx.http, response).await.ok();
+                        }
+                    }
+                }
+            }
+            "add" => {
+                if let Some(opt) = command.data.options.first() {
+                    if let serenity::all::CommandDataOptionValue::SubCommand(opts) = &opt.value {
+                        let media_type = opts.iter().find(|o| o.name == "type")
+                            .and_then(|o| o.value.as_str()).unwrap_or("other");
+                        let title = opts.iter().find(|o| o.name == "title")
+                            .and_then(|o| o.value.as_str()).unwrap_or("");
+                        let url = opts.iter().find(|o| o.name == "url")
+                            .and_then(|o| o.value.as_str());
+                        let priority = opts.iter().find(|o| o.name == "priority")
+                            .and_then(|o| o.value.as_i64())
+                            .map(|p| p as i32);
+                
+                match self.db.add_to_watchlist(user_id, media_type, title, url, priority, None).await {
+                    Ok(_) => {
+                        let response = CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new()
+                                .content(format!("✅ Added **{}** to your {} watchlist!", title, media_type))
+                                .ephemeral(true),
+                        );
+                        command.create_response(&ctx.http, response).await.ok();
+                    }
+                    Err(e) => {
+                        error!("Failed to add to watchlist: {}", e);
+                        let response = CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new()
+                                .content("Failed to add item to watchlist.")
+                                .ephemeral(true),
+                        );
+                        command.create_response(&ctx.http, response).await.ok();
+                    }
+                }
+                    }
+                }
+            }
+            "remove" => {
+                if let serenity::all::CommandDataOptionValue::SubCommand(opts) = subcommand_value {
+                    let media_type = opts.iter().find(|o| o.name == "type")
+                        .and_then(|o| o.value.as_str()).unwrap_or("other");
+                    let title = opts.iter().find(|o| o.name == "title")
+                        .and_then(|o| o.value.as_str()).unwrap_or("");
+                
+                match self.db.remove_from_watchlist(user_id, media_type, title).await {
+                    Ok(true) => {
+                        let response = CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new()
+                                .content(format!("✅ Removed **{}** from your watchlist!", title))
+                                .ephemeral(true),
+                        );
+                        command.create_response(&ctx.http, response).await.ok();
+                    }
+                    Ok(false) => {
+                        let response = CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new()
+                                .content("Item not found in your watchlist.")
+                                .ephemeral(true),
+                        );
+                        command.create_response(&ctx.http, response).await.ok();
+                    }
+                    Err(e) => {
+                        error!("Failed to remove from watchlist: {}", e);
+                        let response = CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new()
+                                .content("Failed to remove item from watchlist.")
+                                .ephemeral(true),
+                        );
+                        command.create_response(&ctx.http, response).await.ok();
+                    }
+                }
+                }
+            }
+            "priority" => {
+                if let serenity::all::CommandDataOptionValue::SubCommand(opts) = subcommand_value {
+                    let media_type = opts.iter().find(|o| o.name == "type")
+                        .and_then(|o| o.value.as_str()).unwrap_or("other");
+                    let title = opts.iter().find(|o| o.name == "title")
+                        .and_then(|o| o.value.as_str()).unwrap_or("");
+                    let new_priority = opts.iter().find(|o| o.name == "new_priority")
+                        .and_then(|o| o.value.as_i64())
+                        .map(|p| p as i32).unwrap_or(50);
+                
+                match self.db.update_watchlist_priority(user_id, media_type, title, new_priority).await {
+                    Ok(true) => {
+                        let response = CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new()
+                                .content(format!("✅ Updated priority for **{}** to {}!", title, new_priority))
+                                .ephemeral(true),
+                        );
+                        command.create_response(&ctx.http, response).await.ok();
+                    }
+                    Ok(false) => {
+                        let response = CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new()
+                                .content("Item not found in your watchlist.")
+                                .ephemeral(true),
+                        );
+                        command.create_response(&ctx.http, response).await.ok();
+                    }
+                    Err(e) => {
+                        error!("Failed to update priority: {}", e);
+                        let response = CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new()
+                                .content("Failed to update priority.")
+                                .ephemeral(true),
+                        );
+                        command.create_response(&ctx.http, response).await.ok();
+                    }
+                }
+                }
+            }
+            "scan" => {
+                // Get the channel ID where the command was used
+                let channel_id = command.channel_id;
+                
+                // Send initial ephemeral message
+                let response = CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content("🔍 Starting channel scan for media recommendations...")
+                        .ephemeral(true),
+                );
+                
+                if let Err(e) = command.create_response(&ctx.http, response).await {
+                    error!("Failed to send initial scan response: {}", e);
+                    return;
+                }
+                
+                // Perform the scan
+                self.scan_channel_for_media(ctx, command, channel_id).await;
+            }
+            _ => {
+                let response = CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content("Unknown subcommand")
+                        .ephemeral(true),
+                );
+                command.create_response(&ctx.http, response).await.ok();
+            }
+        }
+        
+        // Log the command usage
+        self.db.log_bot_response(
+            user_id,
+            Some("/watchlist"),
+            "slash_command",
+            &format!("Used watchlist {}", subcommand),
+            true,
+        ).await.ok();
+    }
+
+    async fn scan_channel_for_media(&self, ctx: &Context, command: &serenity::all::CommandInteraction, channel_id: serenity::all::ChannelId) {
+        use crate::media_detector::{MediaDetector, MediaRecommendation};
+        use std::collections::HashMap;
+        
+        // Fetch the last 100 messages from the channel
+        let messages = match channel_id.messages(&ctx.http, serenity::all::GetMessages::new().limit(100)).await {
+            Ok(msgs) => msgs,
+            Err(e) => {
+                error!("Failed to fetch messages: {}", e);
+                // Send error followup
+                let followup = serenity::all::CreateInteractionResponseFollowup::new()
+                    .content("❌ Failed to fetch messages from this channel.")
+                    .ephemeral(true);
+                command.create_followup(&ctx.http, followup).await.ok();
+                return;
+            }
+        };
+        
+        // Send progress update
+        let followup = serenity::all::CreateInteractionResponseFollowup::new()
+            .content(format!("📊 Scanning {} messages for media recommendations...", messages.len()))
+            .ephemeral(true);
+        command.create_followup(&ctx.http, followup).await.ok();
+        
+        // Create media detector
+        let detector = MediaDetector::new();
+        let mut all_recommendations: HashMap<String, (MediaRecommendation, i32, Vec<String>)> = HashMap::new();
+        let mut scanned_count = 0;
+        
+        // Scan messages
+        for msg in messages.iter() {
+            // Skip bot messages
+            if msg.author.bot {
+                continue;
+            }
+            
+            scanned_count += 1;
+            
+            // Detect media in this message
+            let recommendations = detector.detect_media(&msg.content);
+            
+            for rec in recommendations {
+                let key = format!("{}:{}", rec.media_type, rec.title);
+                
+                all_recommendations
+                    .entry(key)
+                    .and_modify(|(existing, count, users)| {
+                        *count += 1;
+                        // Update confidence if higher
+                        if rec.confidence > existing.confidence {
+                            existing.confidence = rec.confidence;
+                        }
+                        // Update URL if we found one and didn't have one before
+                        if existing.url.is_none() && rec.url.is_some() {
+                            existing.url = rec.url.clone();
+                        }
+                        // Track who mentioned it
+                        let user_tag = format!("{}#{}", msg.author.name, msg.author.discriminator.map(|d| d.to_string()).unwrap_or_else(|| "0000".to_string()));
+                        if !users.contains(&user_tag) {
+                            users.push(user_tag);
+                        }
+                    })
+                    .or_insert((rec, 1, vec![format!("{}#{}", msg.author.name, msg.author.discriminator.map(|d| d.to_string()).unwrap_or_else(|| "0000".to_string()))]));
+            }
+            
+            // Send progress update every 25 messages
+            if scanned_count % 25 == 0 {
+                let progress_followup = serenity::all::CreateInteractionResponseFollowup::new()
+                    .content(format!("⏳ Scanned {} messages...", scanned_count))
+                    .ephemeral(true);
+                command.create_followup(&ctx.http, progress_followup).await.ok();
+            }
+        }
+        
+        // Sort recommendations by mention count
+        let mut sorted_recommendations: Vec<_> = all_recommendations.into_iter().collect();
+        sorted_recommendations.sort_by(|a, b| b.1.1.cmp(&a.1.1));
+        
+        // Create the final embed
+        if sorted_recommendations.is_empty() {
+            let followup = serenity::all::CreateInteractionResponseFollowup::new()
+                .content("No media recommendations found in the last 100 messages.")
+                .ephemeral(false);
+            command.create_followup(&ctx.http, followup).await.ok();
+        } else {
+            let mut embed = CreateEmbed::new()
+                .title("📺 Media Recommendations from Channel Scan")
+                .description(format!("Found {} unique media items from {} messages", sorted_recommendations.len(), scanned_count))
+                .colour(Colour::PURPLE)
+                .footer(serenity::all::CreateEmbedFooter::new("Use /watchlist add to save items to your personal list"));
+            
+            // Add top 10 recommendations
+            for (i, (_key, (rec, count, users))) in sorted_recommendations.iter().take(10).enumerate() {
+                let emoji = match rec.media_type {
+                    "anime" => "🎌",
+                    "tv_show" => "📺",
+                    "movie" => "🎬",
+                    "game" => "🎮",
+                    "youtube" => "📹",
+                    "music" => "🎵",
+                    _ => "📋",
+                };
+                
+                let users_str = if users.len() > 3 {
+                    format!("{} and {} others", users[..3].join(", "), users.len() - 3)
+                } else {
+                    users.join(", ")
+                };
+                
+                let field_value = format!(
+                    "{} **{}**\nMentioned {} times by: {}\nConfidence: {:.0}%{}",
+                    emoji,
+                    rec.media_type,
+                    count,
+                    users_str,
+                    rec.confidence * 100.0,
+                    rec.url.as_ref().map(|u| format!("\n[Link]({})", u)).unwrap_or_default()
+                );
+                
+                embed = embed.field(format!("{}. {}", i + 1, rec.title), field_value, false);
+            }
+            
+            // Send the final visible embed
+            let followup = serenity::all::CreateInteractionResponseFollowup::new()
+                .embed(embed);
+            command.create_followup(&ctx.http, followup).await.ok();
+        }
+    }
+
     async fn handle_autocomplete(
         &self,
         ctx: &Context,
@@ -1464,6 +1877,160 @@ impl EventHandler for Handler {
             Err(e) => error!("Failed to register /whitelist command: {}", e),
         }
 
+        // Register /watchlist command
+        match Command::create_global_command(
+            &ctx.http,
+            serenity::all::CreateCommand::new("watchlist")
+                .description("Manage your media watchlist or view top recommendations")
+                .add_option(
+                    serenity::all::CreateCommandOption::new(
+                        serenity::all::CommandOptionType::SubCommand,
+                        "view",
+                        "View your watchlist or top recommendations",
+                    )
+                    .add_sub_option(
+                        serenity::all::CreateCommandOption::new(
+                            serenity::all::CommandOptionType::String,
+                            "type",
+                            "What to view",
+                        )
+                        .add_string_choice("my watchlist", "mine")
+                        .add_string_choice("top recommendations", "top")
+                        .required(false),
+                    ),
+                )
+                .add_option(
+                    serenity::all::CreateCommandOption::new(
+                        serenity::all::CommandOptionType::SubCommand,
+                        "add",
+                        "Add media to your watchlist",
+                    )
+                    .add_sub_option(
+                        serenity::all::CreateCommandOption::new(
+                            serenity::all::CommandOptionType::String,
+                            "type",
+                            "Media type",
+                        )
+                        .add_string_choice("anime", "anime")
+                        .add_string_choice("tv show", "tv_show")
+                        .add_string_choice("movie", "movie")
+                        .add_string_choice("game", "game")
+                        .add_string_choice("youtube", "youtube")
+                        .add_string_choice("music", "music")
+                        .add_string_choice("other", "other")
+                        .required(true),
+                    )
+                    .add_sub_option(
+                        serenity::all::CreateCommandOption::new(
+                            serenity::all::CommandOptionType::String,
+                            "title",
+                            "Title of the media",
+                        )
+                        .required(true),
+                    )
+                    .add_sub_option(
+                        serenity::all::CreateCommandOption::new(
+                            serenity::all::CommandOptionType::String,
+                            "url",
+                            "URL or link (optional)",
+                        )
+                        .required(false),
+                    )
+                    .add_sub_option(
+                        serenity::all::CreateCommandOption::new(
+                            serenity::all::CommandOptionType::Integer,
+                            "priority",
+                            "Priority (1-100, higher = more important)",
+                        )
+                        .min_int_value(1)
+                        .max_int_value(100)
+                        .required(false),
+                    ),
+                )
+                .add_option(
+                    serenity::all::CreateCommandOption::new(
+                        serenity::all::CommandOptionType::SubCommand,
+                        "remove",
+                        "Remove media from your watchlist",
+                    )
+                    .add_sub_option(
+                        serenity::all::CreateCommandOption::new(
+                            serenity::all::CommandOptionType::String,
+                            "type",
+                            "Media type",
+                        )
+                        .add_string_choice("anime", "anime")
+                        .add_string_choice("tv show", "tv_show")
+                        .add_string_choice("movie", "movie")
+                        .add_string_choice("game", "game")
+                        .add_string_choice("youtube", "youtube")
+                        .add_string_choice("music", "music")
+                        .add_string_choice("other", "other")
+                        .required(true),
+                    )
+                    .add_sub_option(
+                        serenity::all::CreateCommandOption::new(
+                            serenity::all::CommandOptionType::String,
+                            "title",
+                            "Title of the media",
+                        )
+                        .required(true),
+                    ),
+                )
+                .add_option(
+                    serenity::all::CreateCommandOption::new(
+                        serenity::all::CommandOptionType::SubCommand,
+                        "priority",
+                        "Change priority of an item in your watchlist",
+                    )
+                    .add_sub_option(
+                        serenity::all::CreateCommandOption::new(
+                            serenity::all::CommandOptionType::String,
+                            "type",
+                            "Media type",
+                        )
+                        .add_string_choice("anime", "anime")
+                        .add_string_choice("tv show", "tv_show")
+                        .add_string_choice("movie", "movie")
+                        .add_string_choice("game", "game")
+                        .add_string_choice("youtube", "youtube")
+                        .add_string_choice("music", "music")
+                        .add_string_choice("other", "other")
+                        .required(true),
+                    )
+                    .add_sub_option(
+                        serenity::all::CreateCommandOption::new(
+                            serenity::all::CommandOptionType::String,
+                            "title",
+                            "Title of the media",
+                        )
+                        .required(true),
+                    )
+                    .add_sub_option(
+                        serenity::all::CreateCommandOption::new(
+                            serenity::all::CommandOptionType::Integer,
+                            "new_priority",
+                            "New priority (1-100)",
+                        )
+                        .min_int_value(1)
+                        .max_int_value(100)
+                        .required(true),
+                    ),
+                )
+                .add_option(
+                    serenity::all::CreateCommandOption::new(
+                        serenity::all::CommandOptionType::SubCommand,
+                        "scan",
+                        "Scan this channel for media recommendations",
+                    ),
+                ),
+        )
+        .await
+        {
+            Ok(command) => info!("Registered /watchlist command with ID: {}", command.id),
+            Err(e) => error!("Failed to register /watchlist command: {}", e),
+        }
+
         let ctx_arc = Arc::new(ctx);
         if let Err(e) =
             jobs::start_background_jobs(ctx_arc, self.db.clone(), self.media_cache.clone()).await
@@ -1493,6 +2060,9 @@ impl EventHandler for Handler {
                     }
                     "whitelist" => {
                         self.handle_whitelist_slash(&ctx, &command).await;
+                    }
+                    "watchlist" => {
+                        self.handle_watchlist_slash(&ctx, &command).await;
                     }
                     "snort" => {
                         if let Some(guild_id) = command.guild_id {

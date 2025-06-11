@@ -5,6 +5,26 @@ All notable changes to Sentinel Discord Bot will be documented in this file.
 ## [Unreleased] - 2025-06-11
 
 ### Added
+- **Personal Media Watchlist** - Track and manage your entertainment backlog
+  - `/watchlist view` - See your personal watchlist or top community recommendations
+  - `/watchlist add` - Add media to your watchlist with type, title, URL, and priority
+  - `/watchlist remove` - Remove items from your watchlist
+  - `/watchlist priority` - Reprioritize items in your watchlist
+  - `/watchlist scan` - Scan the current channel's last 100 messages for media mentions
+  - Priority-based sorting (1-100 scale)
+  - Status tracking (plan to watch, watching, completed, etc.)
+  - Real-time progress updates during channel scanning
+  - Shows who mentioned each media item and how many times
+  - Integrates with media recommendations from message scanning
+
+- **Media Recommendations Scanner** - Intelligent content analysis for media mentions
+  - Runs every 30 minutes to scan message logs
+  - Detects anime, TV shows, movies, games, and YouTube links
+  - Pattern matching for recommendation context ("watching", "recommend", "check out")
+  - Tracks confidence scores based on context strength
+  - Extracts URLs when mentioned alongside media titles
+  - Incremental scanning with checkpoint tracking
+  - Stores findings in `media_recommendations` table for analysis
 - **Discord Logs Cleanup Job** - Automatic cleanup of old data
   - Runs daily at 4 AM to remove logs older than 31 days
   - Cleans member status logs, nickname logs, and voice logs

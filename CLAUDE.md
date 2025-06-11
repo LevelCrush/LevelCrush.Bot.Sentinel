@@ -236,6 +236,46 @@ CREATE TABLE event_update_logs (
   updated_by BIGINT,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Media recommendations tracking
+CREATE TABLE media_recommendations (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  message_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  channel_id BIGINT NOT NULL,
+  guild_id BIGINT NOT NULL,
+  media_type ENUM('anime', 'tv_show', 'movie', 'game', 'youtube', 'music', 'other') NOT NULL,
+  title VARCHAR(500),
+  url TEXT,
+  confidence_score FLOAT DEFAULT 0.0,
+  extracted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  message_timestamp DATETIME NOT NULL
+);
+
+CREATE TABLE media_scan_checkpoint (
+  id INT PRIMARY KEY DEFAULT 1,
+  last_scanned_message_id BIGINT NOT NULL DEFAULT 0,
+  last_scan_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+  messages_scanned INT DEFAULT 0,
+  recommendations_found INT DEFAULT 0
+);
+
+-- User personal media watchlist
+CREATE TABLE user_watchlist (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  user_id BIGINT NOT NULL,
+  media_type ENUM('anime', 'tv_show', 'movie', 'game', 'youtube', 'music', 'other') NOT NULL,
+  title VARCHAR(500) NOT NULL,
+  url TEXT,
+  priority INT DEFAULT 50,
+  status ENUM('plan_to_watch', 'watching', 'completed', 'dropped', 'on_hold') DEFAULT 'plan_to_watch',
+  added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  notes TEXT,
+  UNIQUE KEY unique_user_media (user_id, media_type, title),
+  INDEX idx_user_priority (user_id, priority DESC),
+  INDEX idx_user_status (user_id, status)
+);
 ```
 
 ---
@@ -267,6 +307,12 @@ Sentinel runs several scheduled jobs using `tokio_cron_scheduler`:
    - Marks expired polls as closed
    - Ensures poll results are finalized when time expires
 
+6. **Media Recommendations Scan** (every 30 minutes):
+   - Scans message logs for media mentions (anime, TV shows, games, YouTube videos)
+   - Uses pattern matching to identify recommendations
+   - Tracks confidence scores and URLs
+   - Incremental scanning from last checkpoint
+
 This keeps logs cross-referenced with accurate identity metadata for auditing or AI training.
 
 ---
@@ -286,10 +332,18 @@ All commands are implemented as Discord slash commands:
 | `/cache [action]`                | Toggle/check media caching (on/off/status) | Whitelisted only |
 | `/whitelist <action> <user>`     | Manage command whitelist (add/remove)   | Super users only |
 | `/snort`                         | Snort brightdust! Tracks global count   | Anyone           |
+| `/watchlist [action]`            | Manage personal media watchlist         | Anyone           |
 
 **User Autocomplete**: All commands that target users (`/kick`, `/ban`, `/timeout`, `/whitelist`) provide autocomplete suggestions from the database. Start typing a username, handle, or nickname to see matching users.
 
 **Snort Cooldown**: The `/snort` command has a per-user cooldown (default: 30 seconds). Each user can only snort once per cooldown period, but multiple users can snort simultaneously.
+
+**Watchlist Features**: The `/watchlist` command provides personal media tracking:
+- `/watchlist view [all]` - View your personal watchlist or top community recommendations (use "all" to see community picks)
+- `/watchlist add <type> <title> [url] [priority]` - Add media to your watchlist with optional URL and priority (1-100)
+- `/watchlist remove <type> <title>` - Remove an item from your watchlist
+- `/watchlist priority <type> <title> <new_priority>` - Update priority of an existing item
+- `/watchlist scan` - Scan the current channel's last 100 messages for media recommendations with real-time progress updates
 
 ### Legacy DM Support
 
