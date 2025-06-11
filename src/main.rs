@@ -1166,6 +1166,36 @@ impl Handler {
         ).await.ok();
     }
 
+    async fn detect_and_log_media(&self, message_id: u64, user_id: u64, channel_id: u64, guild_id: u64, content: &str, timestamp: chrono::DateTime<chrono::Utc>) {
+        use crate::media_detector::MediaDetector;
+        
+        // Create media detector
+        let detector = MediaDetector::new();
+        
+        // Detect media in the content
+        let recommendations = detector.detect_media(content);
+        
+        // Log each recommendation to the database
+        for rec in recommendations {
+            if let Err(e) = self.db.log_media_recommendation(
+                message_id,
+                user_id,
+                channel_id,
+                guild_id,
+                rec.media_type,
+                &rec.title,
+                rec.url.as_deref(),
+                rec.confidence,
+                timestamp,
+            ).await {
+                error!("Failed to log media recommendation: {}", e);
+            } else {
+                info!("Detected {} recommendation '{}' with {:.0}% confidence", 
+                    rec.media_type, rec.title, rec.confidence * 100.0);
+            }
+        }
+    }
+
     async fn scan_channel_for_media(&self, ctx: &Context, command: &serenity::all::CommandInteraction, channel_id: serenity::all::ChannelId) {
         use crate::media_detector::{MediaDetector, MediaRecommendation};
         use std::collections::HashMap;
@@ -1407,6 +1437,18 @@ impl EventHandler for Handler {
             {
                 error!("Failed to log message: {}", e);
             }
+            
+            // Detect and log media recommendations in the message
+            if let Some(guild_id) = msg.guild_id {
+                self.detect_and_log_media(
+                    msg.id.get(),
+                    msg.author.id.get(),
+                    msg.channel_id.get(),
+                    guild_id.get(),
+                    &msg.content,
+                    timestamp.to_utc(),
+                ).await;
+            }
 
             // Check if message contains a poll
             if let Some(poll) = &msg.poll {
@@ -1437,6 +1479,16 @@ impl EventHandler for Handler {
                     {
                         error!("Failed to log poll creation: {}", e);
                     }
+                    
+                    // Check poll question for media recommendations
+                    self.detect_and_log_media(
+                        msg.id.get(),
+                        msg.author.id.get(),
+                        msg.channel_id.get(),
+                        guild_id,
+                        question_text,
+                        timestamp.to_utc(),
+                    ).await;
                 }
 
                 // Log poll answers
@@ -1462,6 +1514,16 @@ impl EventHandler for Handler {
                         {
                             error!("Failed to log poll answer: {}", e);
                         }
+                        
+                        // Check poll answer for media recommendations
+                        self.detect_and_log_media(
+                            msg.id.get(),
+                            msg.author.id.get(),
+                            msg.channel_id.get(),
+                            guild_id,
+                            answer_text,
+                            timestamp.to_utc(),
+                        ).await;
                     }
                 }
             }
@@ -1557,6 +1619,20 @@ impl EventHandler for Handler {
 
             if let Err(e) = self.db.log_message_edit(event.id.get(), &content).await {
                 error!("Failed to log message edit: {}", e);
+            }
+            
+            // Detect and log media recommendations in edited message
+            if let (Some(author), Some(guild_id)) = (event.author, event.guild_id) {
+                if !author.bot {
+                    self.detect_and_log_media(
+                        event.id.get(),
+                        author.id.get(),
+                        event.channel_id.get(),
+                        guild_id.get(),
+                        &content,
+                        event.edited_timestamp.map(|t| t.to_utc()).unwrap_or_else(chrono::Utc::now),
+                    ).await;
+                }
             }
         }
     }
@@ -2696,6 +2772,17 @@ impl EventHandler for Handler {
         {
             error!("Failed to log event creation: {}", e);
         }
+        
+        // Check event name and description for media recommendations
+        let event_text = format!("{} {}", event.name, event.description.as_deref().unwrap_or(""));
+        self.detect_and_log_media(
+            event.id.get(), // Using event ID as message ID
+            event.creator_id.unwrap_or_default().get(),
+            event.channel_id.map(|c| c.get()).unwrap_or(0),
+            event.guild_id.get(),
+            &event_text,
+            chrono::Utc::now(),
+        ).await;
     }
 
     async fn guild_scheduled_event_update(&self, _ctx: Context, event: ScheduledEvent) {

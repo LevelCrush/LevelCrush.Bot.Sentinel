@@ -18,7 +18,8 @@ All notable changes to Sentinel Discord Bot will be documented in this file.
   - Integrates with media recommendations from message scanning
 
 - **Media Recommendations Scanner** - Intelligent content analysis for media mentions
-  - Runs every 30 minutes to scan message logs
+  - Real-time detection in new messages, edited messages, polls, and events
+  - Background scan runs every 30 minutes for historical data
   - Detects anime, TV shows, movies, games, and YouTube links
   - Pattern matching for recommendation context ("watching", "recommend", "check out")
   - Tracks confidence scores based on context strength
