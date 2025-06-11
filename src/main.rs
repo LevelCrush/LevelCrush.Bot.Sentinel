@@ -4,10 +4,11 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use serenity::all::{
-    ChannelType, Colour, Command, Context, CreateAttachment, CreateEmbed, CreateInteractionResponse,
-    CreateInteractionResponseMessage, EditMember, EventHandler, GatewayIntents, Guild,
-    GuildChannel, GuildId, GuildMemberUpdateEvent, Interaction, Member, Message, Presence, Ready,
-    User, VoiceState,
+    ChannelType, Colour, Command, Context, CreateAttachment, CreateEmbed,
+    CreateInteractionResponse, CreateInteractionResponseMessage, EditMember, EventHandler,
+    GatewayIntents, Guild, GuildChannel, GuildId, GuildMemberUpdateEvent,
+    GuildScheduledEventUserAddEvent, GuildScheduledEventUserRemoveEvent, Interaction, Member,
+    Message, Presence, Ready, ScheduledEvent, ScheduledEventStatus, User, VoiceState,
 };
 use serenity::async_trait;
 use serenity::client::Client;
@@ -72,7 +73,7 @@ impl Handler {
 
     async fn get_random_snort_meme() -> Option<std::path::PathBuf> {
         let memes_dir = Path::new("memes/snort");
-        
+
         // Create directory if it doesn't exist
         if !memes_dir.exists() {
             if let Err(e) = tokio::fs::create_dir_all(memes_dir).await {
@@ -80,7 +81,7 @@ impl Handler {
                 return None;
             }
         }
-        
+
         // Get list of image files
         let valid_extensions = ["jpg", "jpeg", "png", "gif", "webp"];
         let mut entries = match tokio::fs::read_dir(memes_dir).await {
@@ -90,24 +91,26 @@ impl Handler {
                 return None;
             }
         };
-        
+
         let mut image_files = Vec::new();
         while let Ok(Some(entry)) = entries.next_entry().await {
             let path = entry.path();
             if path.is_file() {
                 if let Some(extension) = path.extension() {
-                    if valid_extensions.contains(&extension.to_str().unwrap_or("").to_lowercase().as_str()) {
+                    if valid_extensions
+                        .contains(&extension.to_str().unwrap_or("").to_lowercase().as_str())
+                    {
                         image_files.push(path);
                     }
                 }
             }
         }
-        
+
         if image_files.is_empty() {
             info!("No meme images found in memes/snort directory");
             return None;
         }
-        
+
         // Select random image
         use rand::seq::SliceRandom;
         image_files.choose(&mut rand::thread_rng()).cloned()
@@ -992,6 +995,64 @@ impl EventHandler for Handler {
                 error!("Failed to log message: {}", e);
             }
 
+            // Check if message contains a poll
+            if let Some(poll) = &msg.poll {
+                let poll_id = format!("{}_{}", msg.channel_id.get(), msg.id.get());
+                let guild_id = msg.guild_id.unwrap_or_default().get();
+
+                let question_text = poll.question.text.as_deref().unwrap_or("<no question>");
+                info!(
+                    "[POLL CREATE] User {} created poll '{}' in channel {} (message {})",
+                    msg.author.id, question_text, msg.channel_id, msg.id
+                );
+
+                // Log poll creation
+                if let Some(question_text) = &poll.question.text {
+                    if let Err(e) = self
+                        .db
+                        .log_poll_created(
+                            &poll_id,
+                            msg.id.get(),
+                            msg.channel_id.get(),
+                            guild_id,
+                            msg.author.id.get(),
+                            question_text,
+                            poll.expiry.map(|t| t.to_utc()),
+                            poll.allow_multiselect,
+                        )
+                        .await
+                    {
+                        error!("Failed to log poll creation: {}", e);
+                    }
+                }
+
+                // Log poll answers
+                for (i, answer) in poll.answers.iter().enumerate() {
+                    if let Some(answer_text) = &answer.poll_media.text {
+                        if let Err(e) = self
+                            .db
+                            .log_poll_answer(
+                                &poll_id,
+                                i as u32,
+                                answer_text,
+                                answer
+                                    .poll_media
+                                    .emoji
+                                    .as_ref()
+                                    .map(|e| match e {
+                                        serenity::all::PollMediaEmoji::Name(name) => name.clone(),
+                                        serenity::all::PollMediaEmoji::Id(id) => id.to_string(),
+                                    })
+                                    .as_deref(),
+                            )
+                            .await
+                        {
+                            error!("Failed to log poll answer: {}", e);
+                        }
+                    }
+                }
+            }
+
             // Handle attachments if media caching is enabled
             if !msg.attachments.is_empty() {
                 if let Ok(Some(cache_enabled)) = self.db.get_setting("cache_media").await {
@@ -1470,12 +1531,16 @@ impl EventHandler for Handler {
                                                 "We have snorted brightdust {}",
                                                 Self::format_snort_count(count)
                                             ),
-                                            true // Successfully incremented, attach meme
+                                            true, // Successfully incremented, attach meme
                                         )
                                     }
                                     Err(e) => {
                                         error!("Failed to increment snort counter: {}", e);
-                                        ("Failed to snort brightdust! Database error.".to_string(), false)
+                                        (
+                                            "Failed to snort brightdust! Database error."
+                                                .to_string(),
+                                            false,
+                                        )
                                     }
                                 }
                             } else {
@@ -1490,12 +1555,12 @@ impl EventHandler for Handler {
                             // Send response with meme only if we incremented the counter
                             let mut response_message = CreateInteractionResponseMessage::new()
                                 .content(response_content.clone());
-                            
+
                             // Make cooldown messages ephemeral (only visible to the user)
                             if !should_attach_meme {
                                 response_message = response_message.ephemeral(true);
                             }
-                            
+
                             // Add random meme only if we should (counter was incremented)
                             if should_attach_meme {
                                 if let Some(meme_path) = Self::get_random_snort_meme().await {
@@ -1504,15 +1569,16 @@ impl EventHandler for Handler {
                                             .file_name()
                                             .and_then(|name| name.to_str())
                                             .unwrap_or("snort_meme.png");
-                                        
-                                        let attachment = CreateAttachment::bytes(file_contents, filename);
+
+                                        let attachment =
+                                            CreateAttachment::bytes(file_contents, filename);
                                         response_message = response_message.add_file(attachment);
-                                        
+
                                         info!("Attached snort meme: {}", meme_path.display());
                                     }
                                 }
                             }
-                            
+
                             let response = CreateInteractionResponse::Message(response_message);
 
                             if let Err(e) = command.create_response(&ctx.http, response).await {
@@ -1949,6 +2015,220 @@ impl EventHandler for Handler {
             user.name, user.id, guild_name, guild_id
         );
     }
+
+    // Poll tracking - Discord polls are sent as messages with poll data
+    async fn poll_vote_add(&self, ctx: Context, add_event: serenity::all::MessagePollVoteAddEvent) {
+        let user_id = add_event.user_id.get();
+        let message_id = add_event.message_id.get();
+        let answer_id = add_event.answer_id;
+
+        // Get the message to extract poll details
+        if let Ok(message) = ctx
+            .http
+            .get_message(add_event.channel_id, add_event.message_id)
+            .await
+        {
+            if let Some(poll) = &message.poll {
+                let poll_id = format!("{}_{}", message.channel_id.get(), message_id);
+                let _guild_id = message.guild_id.unwrap_or_default().get();
+
+                let question_text = poll.question.text.as_deref().unwrap_or("<no question>");
+                info!(
+                    "[POLL VOTE] User {} voted for answer {} in poll {} (message {})",
+                    user_id,
+                    answer_id.get(),
+                    question_text,
+                    message_id
+                );
+
+                // Log the vote
+                if let Err(e) = self
+                    .db
+                    .log_poll_vote(&poll_id, user_id, answer_id.get() as u32)
+                    .await
+                {
+                    error!("Failed to log poll vote: {}", e);
+                }
+            }
+        }
+    }
+
+    async fn poll_vote_remove(
+        &self,
+        ctx: Context,
+        remove_event: serenity::all::MessagePollVoteRemoveEvent,
+    ) {
+        let user_id = remove_event.user_id.get();
+        let message_id = remove_event.message_id.get();
+        let answer_id = remove_event.answer_id;
+
+        if let Ok(message) = ctx
+            .http
+            .get_message(remove_event.channel_id, remove_event.message_id)
+            .await
+        {
+            if let Some(poll) = &message.poll {
+                let poll_id = format!("{}_{}", message.channel_id.get(), message_id);
+
+                let question_text = poll.question.text.as_deref().unwrap_or("<no question>");
+                info!(
+                    "[POLL UNVOTE] User {} removed vote for answer {} in poll {} (message {})",
+                    user_id,
+                    answer_id.get(),
+                    question_text,
+                    message_id
+                );
+
+                // Remove the vote
+                if let Err(e) = self
+                    .db
+                    .remove_poll_vote(&poll_id, user_id, answer_id.get() as u32)
+                    .await
+                {
+                    error!("Failed to remove poll vote: {}", e);
+                }
+            }
+        }
+    }
+
+    // Guild scheduled events tracking
+    async fn guild_scheduled_event_create(&self, _ctx: Context, event: ScheduledEvent) {
+        info!(
+            "[EVENT CREATE] Event '{}' created by {} in guild {}",
+            event.name,
+            event.creator_id.unwrap_or_default(),
+            event.guild_id
+        );
+
+        let status = match event.status {
+            ScheduledEventStatus::Scheduled => "scheduled",
+            ScheduledEventStatus::Active => "active",
+            ScheduledEventStatus::Completed => "completed",
+            ScheduledEventStatus::Canceled => "cancelled",
+            _ => "unknown",
+        };
+
+        if let Err(e) = self
+            .db
+            .log_event_created(
+                event.id.get(),
+                event.guild_id.get(),
+                event.channel_id.map(|c| c.get()),
+                event.creator_id.unwrap_or_default().get(),
+                &event.name,
+                event.description.as_deref(),
+                event.start_time.to_utc(),
+                event.end_time.map(|t| t.to_utc()),
+                event.metadata.as_ref().and_then(|m| m.location.as_deref()),
+                status,
+            )
+            .await
+        {
+            error!("Failed to log event creation: {}", e);
+        }
+    }
+
+    async fn guild_scheduled_event_update(&self, _ctx: Context, event: ScheduledEvent) {
+        info!(
+            "[EVENT UPDATE] Event '{}' updated in guild {}",
+            event.name, event.guild_id
+        );
+
+        let status = match event.status {
+            ScheduledEventStatus::Scheduled => "scheduled",
+            ScheduledEventStatus::Active => "active",
+            ScheduledEventStatus::Completed => "completed",
+            ScheduledEventStatus::Canceled => "cancelled",
+            _ => "unknown",
+        };
+
+        // Log as update - the database will handle updating existing record
+        if let Err(e) = self
+            .db
+            .log_event_created(
+                event.id.get(),
+                event.guild_id.get(),
+                event.channel_id.map(|c| c.get()),
+                event.creator_id.unwrap_or_default().get(),
+                &event.name,
+                event.description.as_deref(),
+                event.start_time.to_utc(),
+                event.end_time.map(|t| t.to_utc()),
+                event.metadata.as_ref().and_then(|m| m.location.as_deref()),
+                status,
+            )
+            .await
+        {
+            error!("Failed to log event update: {}", e);
+        }
+    }
+
+    async fn guild_scheduled_event_delete(&self, _ctx: Context, event: ScheduledEvent) {
+        info!(
+            "[EVENT DELETE] Event '{}' deleted from guild {}",
+            event.name, event.guild_id
+        );
+
+        // Log the deletion as a status update
+        if let Err(e) = self
+            .db
+            .log_event_update(
+                event.id.get(),
+                "status",
+                Some("active/scheduled"),
+                Some("deleted"),
+                None,
+            )
+            .await
+        {
+            error!("Failed to log event deletion: {}", e);
+        }
+    }
+
+    async fn guild_scheduled_event_user_add(
+        &self,
+        _ctx: Context,
+        subscribed: GuildScheduledEventUserAddEvent,
+    ) {
+        info!(
+            "[EVENT INTEREST] User {} expressed interest in event {} in guild {}",
+            subscribed.user_id, subscribed.scheduled_event_id, subscribed.guild_id
+        );
+
+        if let Err(e) = self
+            .db
+            .log_event_interest(
+                subscribed.scheduled_event_id.get(),
+                subscribed.user_id.get(),
+                "interested",
+            )
+            .await
+        {
+            error!("Failed to log event interest: {}", e);
+        }
+    }
+
+    async fn guild_scheduled_event_user_remove(
+        &self,
+        _ctx: Context,
+        unsubscribed: GuildScheduledEventUserRemoveEvent,
+    ) {
+        info!(
+            "[EVENT UNINTEREST] User {} removed interest in event {} in guild {}",
+            unsubscribed.user_id, unsubscribed.scheduled_event_id, unsubscribed.guild_id
+        );
+
+        if let Err(e) = self
+            .db
+            .remove_event_interest(
+                unsubscribed.scheduled_event_id.get(),
+                unsubscribed.user_id.get(),
+            )
+            .await
+        {
+            error!("Failed to remove event interest: {}", e);
+        }
+    }
 }
 
 #[tokio::main]
@@ -2013,7 +2293,8 @@ async fn main() -> Result<()> {
         | GatewayIntents::GUILD_MESSAGE_REACTIONS
         | GatewayIntents::DIRECT_MESSAGES
         | GatewayIntents::GUILD_MESSAGE_TYPING
-        | GatewayIntents::GUILD_PRESENCES;
+        | GatewayIntents::GUILD_PRESENCES
+        | GatewayIntents::GUILD_SCHEDULED_EVENTS;
 
     let handler = Handler::new(db.clone(), media_cache.clone());
 

@@ -2,9 +2,30 @@
 
 All notable changes to Sentinel Discord Bot will be documented in this file.
 
-## [Unreleased] - 2025-06-10
+## [Unreleased] - 2025-06-11
 
 ### Added
+- **Discord Logs Cleanup Job** - Automatic cleanup of old data
+  - Runs daily at 4 AM to remove logs older than 31 days
+  - Cleans member status logs, nickname logs, and voice logs
+  - Removes old poll votes for closed polls and expired event data
+  - Helps maintain database performance and manage storage
+  - Configurable retention period (currently 31 days)
+
+- **Discord Poll Tracking** - Comprehensive logging of Discord's native poll feature
+  - Logs poll creation with question, answers, and expiry time
+  - Tracks all votes and vote removals in real-time
+  - Stores poll configuration (multiselect allowed, emojis)
+  - Background job to close expired polls automatically
+  - Poll data linked to messages and channels
+
+- **Discord Scheduled Events Tracking** - Full monitoring of server events
+  - Logs event creation with name, description, time, and location
+  - Tracks event status (scheduled, active, completed, cancelled)
+  - Records user interest/RSVP (interested, maybe, not interested, attending)
+  - Monitors all event updates and changes with history
+  - Logs event deletions
+
 - **Historical message scanning** - Background job that scans all channels for historical messages
   - Runs hourly and scans up to 5 channels per run
   - Fetches up to 10,000 messages per channel going back as far as Discord allows

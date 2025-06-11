@@ -67,6 +67,38 @@ pub async fn start_background_jobs(
     })?;
 
     scheduler.add(history_scan_job).await?;
+
+    // Poll expiry check job - runs every hour
+    let db_poll_check = db.clone();
+
+    let poll_expiry_job = Job::new_async("0 0 * * * *", move |_uuid, _l| {
+        let db = db_poll_check.clone();
+        Box::pin(async move {
+            tokio::spawn(async move {
+                if let Err(e) = check_expired_polls(db).await {
+                    tracing::error!("Failed to check expired polls: {}", e);
+                }
+            });
+        })
+    })?;
+
+    scheduler.add(poll_expiry_job).await?;
+
+    // Status cleanup job - runs daily at 4 AM
+    let db_status_cleanup = db.clone();
+
+    let status_cleanup_job = Job::new_async("0 0 4 * * *", move |_uuid, _l| {
+        let db = db_status_cleanup.clone();
+        Box::pin(async move {
+            tokio::spawn(async move {
+                if let Err(e) = cleanup_old_status_logs(db).await {
+                    tracing::error!("Failed to cleanup old status logs: {}", e);
+                }
+            });
+        })
+    })?;
+
+    scheduler.add(status_cleanup_job).await?;
     scheduler.start().await?;
 
     info!("Background jobs started");
@@ -188,7 +220,7 @@ async fn scan_channel_history(ctx: Arc<Context>, db: Database) -> Result<()> {
 
     // Get all accessible channels from cache
     let mut channels_to_scan = Vec::new();
-    
+
     for guild_id in ctx.cache.guilds() {
         if let Some(guild) = ctx.cache.guild(guild_id) {
             for (channel_id, channel) in &guild.channels {
@@ -200,7 +232,10 @@ async fn scan_channel_history(ctx: Arc<Context>, db: Database) -> Result<()> {
         }
     }
 
-    info!("Found {} text channels to potentially scan", channels_to_scan.len());
+    info!(
+        "Found {} text channels to potentially scan",
+        channels_to_scan.len()
+    );
 
     // Scan up to 5 channels per run to avoid overwhelming the system
     let mut scanned_count = 0;
@@ -208,7 +243,10 @@ async fn scan_channel_history(ctx: Arc<Context>, db: Database) -> Result<()> {
 
     for (channel_id, guild_id) in channels_to_scan {
         if scanned_count >= MAX_CHANNELS_PER_RUN {
-            info!("Reached maximum channels per run ({}), stopping", MAX_CHANNELS_PER_RUN);
+            info!(
+                "Reached maximum channels per run ({}), stopping",
+                MAX_CHANNELS_PER_RUN
+            );
             break;
         }
 
@@ -222,17 +260,27 @@ async fn scan_channel_history(ctx: Arc<Context>, db: Database) -> Result<()> {
                 // Not scanned yet, proceed
             }
             Err(e) => {
-                tracing::error!("Failed to check scan status for channel {}: {}", channel_id, e);
+                tracing::error!(
+                    "Failed to check scan status for channel {}: {}",
+                    channel_id,
+                    e
+                );
                 continue;
             }
         }
 
-        info!("Scanning historical messages for channel {} in guild {}", channel_id, guild_id);
+        info!(
+            "Scanning historical messages for channel {} in guild {}",
+            channel_id, guild_id
+        );
 
         // Scan the channel
         match scan_single_channel(&ctx, &db, channel_id, guild_id).await {
             Ok(messages_scanned) => {
-                info!("Successfully scanned {} messages from channel {}", messages_scanned, channel_id);
+                info!(
+                    "Successfully scanned {} messages from channel {}",
+                    messages_scanned, channel_id
+                );
                 scanned_count += 1;
             }
             Err(e) => {
@@ -244,7 +292,10 @@ async fn scan_channel_history(ctx: Arc<Context>, db: Database) -> Result<()> {
         tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
     }
 
-    info!("Channel history scan job completed. Scanned {} channels", scanned_count);
+    info!(
+        "Channel history scan job completed. Scanned {} channels",
+        scanned_count
+    );
     Ok(())
 }
 
@@ -255,7 +306,7 @@ async fn scan_single_channel(
     guild_id: serenity::all::GuildId,
 ) -> Result<u32> {
     use serenity::all::GetMessages;
-    
+
     let mut total_messages = 0u32;
     let mut oldest_message_id: Option<u64> = None;
     let mut last_message_id: Option<serenity::all::MessageId> = None;
@@ -266,7 +317,10 @@ async fn scan_single_channel(
 
     loop {
         if total_messages >= MAX_MESSAGES {
-            info!("Reached maximum message limit ({}) for channel {}", MAX_MESSAGES, channel_id);
+            info!(
+                "Reached maximum message limit ({}) for channel {}",
+                MAX_MESSAGES, channel_id
+            );
             break;
         }
 
@@ -281,8 +335,18 @@ async fn scan_single_channel(
             Ok(messages) => messages,
             Err(e) => {
                 // If we get an error (e.g., no permission), mark the channel as scanned anyway
-                tracing::warn!("Error fetching messages from channel {}: {}. Marking as scanned.", channel_id, e);
-                db.mark_channel_scanned(channel_id.get(), guild_id.get(), oldest_message_id, total_messages).await?;
+                tracing::warn!(
+                    "Error fetching messages from channel {}: {}. Marking as scanned.",
+                    channel_id,
+                    e
+                );
+                db.mark_channel_scanned(
+                    channel_id.get(),
+                    guild_id.get(),
+                    oldest_message_id,
+                    total_messages,
+                )
+                .await?;
                 return Ok(total_messages);
             }
         };
@@ -300,13 +364,16 @@ async fn scan_single_channel(
             }
 
             // Log the message (without caching media as requested)
-            if let Err(e) = db.log_message(
-                message.id.get(),
-                message.author.id.get(),
-                channel_id.get(),
-                &message.content,
-                message.timestamp.to_utc(),
-            ).await {
+            if let Err(e) = db
+                .log_message(
+                    message.id.get(),
+                    message.author.id.get(),
+                    channel_id.get(),
+                    &message.content,
+                    message.timestamp.to_utc(),
+                )
+                .await
+            {
                 tracing::error!("Failed to log historical message {}: {}", message.id, e);
                 continue;
             }
@@ -328,7 +395,10 @@ async fn scan_single_channel(
 
         // Log progress
         if total_messages % 1000 == 0 {
-            info!("Scanned {} messages so far from channel {}", total_messages, channel_id);
+            info!(
+                "Scanned {} messages so far from channel {}",
+                total_messages, channel_id
+            );
         }
 
         // Small delay to avoid rate limiting
@@ -336,7 +406,71 @@ async fn scan_single_channel(
     }
 
     // Mark channel as scanned
-    db.mark_channel_scanned(channel_id.get(), guild_id.get(), oldest_message_id, total_messages).await?;
+    db.mark_channel_scanned(
+        channel_id.get(),
+        guild_id.get(),
+        oldest_message_id,
+        total_messages,
+    )
+    .await?;
 
     Ok(total_messages)
+}
+
+async fn check_expired_polls(db: Database) -> Result<()> {
+    info!("Checking for expired polls");
+
+    // Query for polls that have expired but haven't been closed
+    let expired_polls: Vec<(String,)> = sqlx::query_as(
+        r#"
+        SELECT poll_id 
+        FROM poll_logs 
+        WHERE expires_at IS NOT NULL 
+        AND expires_at < NOW() 
+        AND closed_at IS NULL
+        "#,
+    )
+    .fetch_all(&db.pool)
+    .await?;
+
+    info!("Found {} expired polls to close", expired_polls.len());
+
+    for (poll_id,) in expired_polls {
+        match db.close_poll(&poll_id).await {
+            Ok(_) => info!("Closed expired poll: {}", poll_id),
+            Err(e) => tracing::error!("Failed to close expired poll {}: {}", poll_id, e),
+        }
+    }
+
+    Ok(())
+}
+
+async fn cleanup_old_status_logs(db: Database) -> Result<()> {
+    info!("Starting Discord logs cleanup job");
+
+    // Delete status logs older than 31 days
+    match db.cleanup_old_status_logs(31).await {
+        Ok(deleted_count) => {
+            info!("Deleted {} old status log entries", deleted_count);
+        }
+        Err(e) => {
+            tracing::error!("Failed to cleanup old status logs: {}", e);
+        }
+    }
+
+    // Delete other old logs (nickname, voice, poll votes, event data)
+    match db.cleanup_old_logs(31).await {
+        Ok((nicknames, voice, poll_votes, event_interests, event_updates)) => {
+            info!(
+                "Cleanup complete - Deleted: {} nickname logs, {} voice logs, {} poll votes, {} event interests, {} event updates",
+                nicknames, voice, poll_votes, event_interests, event_updates
+            );
+        }
+        Err(e) => {
+            tracing::error!("Failed to cleanup old logs: {}", e);
+        }
+    }
+
+    info!("Discord logs cleanup job completed");
+    Ok(())
 }

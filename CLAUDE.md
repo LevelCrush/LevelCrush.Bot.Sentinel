@@ -18,6 +18,8 @@ Key features include:
 - **Nickname monitoring**: Tracks all nickname changes with timestamps
 - **Channel audit logs**: Creation, deletion, and modifications (name, topic, permissions)
 - **Smart command handling**: Suggests correct commands for misspellings
+- **Poll tracking**: Logs poll creation, votes, and expiry
+- **Event tracking**: Monitors Discord scheduled events and user interest/RSVPs
 - Tracking all server users with metadata syncing
 - Background job to keep usernames, nicknames, and handles current
 - Whitelist-restricted moderation commands sent via Direct Message
@@ -168,20 +170,102 @@ CREATE TABLE user_snort_cooldowns (
   user_id BIGINT PRIMARY KEY,
   last_snort_time DATETIME NOT NULL
 );
+
+-- Discord polls tracking
+CREATE TABLE poll_logs (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  poll_id VARCHAR(255) NOT NULL,
+  message_id BIGINT NOT NULL,
+  channel_id BIGINT NOT NULL,
+  guild_id BIGINT NOT NULL,
+  creator_id BIGINT NOT NULL,
+  question TEXT,
+  created_at DATETIME NOT NULL,
+  expires_at DATETIME,
+  closed_at DATETIME,
+  is_multiselect BOOLEAN DEFAULT FALSE
+);
+
+CREATE TABLE poll_answers (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  poll_id VARCHAR(255) NOT NULL,
+  answer_id INT NOT NULL,
+  answer_text TEXT,
+  emoji VARCHAR(255)
+);
+
+CREATE TABLE poll_votes (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  poll_id VARCHAR(255) NOT NULL,
+  user_id BIGINT NOT NULL,
+  answer_id INT NOT NULL,
+  voted_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Discord scheduled events tracking
+CREATE TABLE event_logs (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  event_id BIGINT NOT NULL,
+  guild_id BIGINT NOT NULL,
+  channel_id BIGINT,
+  creator_id BIGINT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT,
+  start_time DATETIME NOT NULL,
+  end_time DATETIME,
+  location VARCHAR(500),
+  status VARCHAR(50),
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+CREATE TABLE event_interests (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  event_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  interest_type ENUM('interested', 'maybe', 'not_interested', 'attending'),
+  expressed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE event_update_logs (
+  id INT PRIMARY KEY AUTO_INCREMENT,
+  event_id BIGINT NOT NULL,
+  field_name VARCHAR(100) NOT NULL,
+  old_value TEXT,
+  new_value TEXT,
+  updated_by BIGINT,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 ```
 
 ---
 
 ## Background Jobs
 
-Sentinel runs a scheduled job (using `tokio_cron_scheduler` or a custom Tokio loop) to update the `users` table:
+Sentinel runs several scheduled jobs using `tokio_cron_scheduler`:
 
-- Maps `discord_user_id` to:
-  - Username
-  - Discriminator
-  - Global handle (`@handle`)
-  - Server-specific nickname
-- Runs at regular intervals (e.g., every 12 or 24 hours)
+1. **User Sync Job** (every 12 hours):
+   - Updates the `users` table with current usernames, discriminators, handles, and nicknames
+   - Syncs all members across all guilds
+
+2. **Media Cleanup Job** (daily at 3 AM):
+   - Deletes cached media files older than 31 days
+   - Only runs if media caching is enabled
+
+3. **Discord Logs Cleanup** (daily at 4 AM):
+   - Removes logs older than 31 days to manage database size
+   - Cleans up: member status logs, nickname logs, voice logs
+   - Also removes old poll votes (for closed polls) and event data
+   - Keeps database performant by preventing unbounded growth
+
+4. **Channel History Scan** (hourly):
+   - Scans up to 5 unscanned channels per run
+   - Retrieves historical messages (up to 10,000 per channel)
+   - Helps capture messages sent before the bot joined
+
+5. **Poll Expiry Check** (hourly):
+   - Marks expired polls as closed
+   - Ensures poll results are finalized when time expires
 
 This keeps logs cross-referenced with accurate identity metadata for auditing or AI training.
 

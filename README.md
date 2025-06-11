@@ -1,25 +1,51 @@
 # Sentinel Discord Bot
 
-A full-spectrum Discord moderation and logging bot designed for transparency and auditability.
+A comprehensive Discord moderation and logging bot built with Rust and Serenity framework (v0.12), designed for transparency, auditability, and data retention in environments like AI model training platforms.
+
+## Quick Start
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/sentinel.git
+cd sentinel
+
+# Set up environment
+echo "DISCORD_TOKEN=your_bot_token_here" > .env
+echo "DATABASE_URL=mysql://root:password@localhost/sentinel" >> .env
+
+# Run the bot
+cargo run
+```
 
 ## Features
 
-- **Complete Message Logging**: All messages, edits, and deletions are tracked
-- **DM Logging**: All direct messages to the bot are logged to database
-- **Bot Response Logging**: All bot responses to commands are logged to database
-- **File Logging**: All logs written to daily rotating files in JSON format
-- **Media Attachment Caching**: Downloads and stores all media attachments locally (toggleable)
+### Core Logging & Tracking
+- **Complete Message Logging**: All messages, edits, and deletions tracked with timestamps
+- **Historical Message Scanning**: Background job retrieves messages sent before bot joined (up to 10,000 per channel)
+- **Media Attachment Caching**: Downloads and stores all media locally with automatic 31-day cleanup (toggleable)
 - **Voice Activity Tracking**: Logs joins, leaves, and channel switches
 - **Forum/Thread Monitoring**: Tracks thread creation and content
+- **Poll Tracking**: Logs Discord polls creation, votes, and expiry with automatic closure
+- **Event Tracking**: Monitors Discord scheduled events, user RSVPs, and all event changes
+
+### Member & Presence Tracking
 - **User Database**: Maintains records of all server users with metadata
 - **Member Presence Tracking**: Logs status changes (online/idle/dnd/offline) and activities
-- **Member Join/Leave Tracking**: Logs when users join or leave servers
+- **Member Join/Leave Tracking**: Records when users join or leave servers
 - **Nickname Change Detection**: Tracks all nickname modifications with timestamps
-- **Channel Audit Logging**: Monitors channel creation, deletion, and modifications (name, topic, permissions)
-- **DM-Based Moderation**: Anonymous moderation commands via DMs with smart command suggestions
-- **Whitelist System**: Only authorized users can use moderation commands
-- **Background Sync**: Automatic user data synchronization every 12 hours
-- **Media Cleanup**: Automatic deletion of cached media older than 31 days
+- **Channel Audit Logging**: Monitors channel creation, deletion, and modifications
+
+### Moderation System
+- **Slash Command Based**: Modern Discord integration with autocomplete
+- **Cross-Guild Moderation**: Commands work across ALL guilds where bot is present
+- **Smart User Search**: Find users by username, @handle, or server nickname
+- **Whitelist System**: Hierarchical permissions (super users, whitelisted users, regular users)
+- **Detailed Logging**: All bot actions and responses tracked in database
+
+### Data Management
+- **Automatic Data Cleanup**: Daily job removes logs older than 31 days to manage database size
+- **Background Jobs**: User sync, media cleanup, poll expiry, and historical scanning
+- **Structured Logging**: JSON file logs with daily rotation plus database storage
 
 ## Setup
 
@@ -44,32 +70,41 @@ A full-spectrum Discord moderation and logging bot designed for transparency and
    cargo run
    ```
 
+## Environment Variables
+
+| Variable | Description | Example |
+|----------|-------------|---------|
+| `DISCORD_TOKEN` | Your Discord bot token | `MTIz...abc` |
+| `DATABASE_URL` | MariaDB/MySQL connection string | `mysql://user:pass@localhost/sentinel` |
+| `RUST_LOG` | Logging level (optional) | `info`, `debug`, `trace` |
+
 ## Commands
 
-### DM Commands
-
-Send these commands via Direct Message to the bot:
-
-- `/help` - Show command list
-- `/kick <@user> [reason]` - Kick a user from all guilds (whitelisted only)
-- `/ban <@user> [reason]` - Ban a user from all guilds (whitelisted only)
-- `/timeout <@user> <minutes> [reason]` - Timeout a user in all guilds (max 28 days, whitelisted only)
-- `/cache [on|off]` - Toggle media caching on or off (whitelisted only)
-- `/whitelist <add|remove> <@user>` - Manage command whitelist (super users only)
+All commands are implemented as Discord slash commands with autocomplete support:
 
 ### Slash Commands
 
-Available in server channels:
+| Command | Description | Access Level |
+|---------|-------------|--------------|
+| `/help` | Show available commands | Everyone |
+| `/kick <user> [reason]` | Kick user from all guilds | Whitelisted only |
+| `/ban <user> [reason]` | Ban user from all guilds | Whitelisted only |
+| `/timeout <user> <duration> [reason]` | Timeout user (1-40320 minutes) | Whitelisted only |
+| `/cache [on\|off\|status]` | Toggle/check media caching | Whitelisted only |
+| `/whitelist <add\|remove> <user>` | Manage command whitelist | Super users only |
+| `/snort` | Snort brightdust! (with memes) | Everyone |
 
-- `/snort` - Snort some brightdust! (tracks global count with configurable cooldown)
+**Features**: 
+- **User Autocomplete**: Start typing a username, handle, or nickname to see suggestions
+- **Cross-Guild Execution**: Moderation commands work across ALL guilds where bot is present
+- **Per-User Cooldowns**: Each user has independent cooldown for fun commands
+- **Smart Search**: Finds users by username, @handle, or server nickname
+- **Detailed Results**: Shows success/failure for each guild with specific error messages
+- **Meme Integration**: `/snort` command includes random meme attachments
 
-**Note**: 
-- Moderation commands now work across ALL guilds where the bot is present
-- Use Discord handles instead of user IDs (e.g., `@username`, `username#1234`, or server nicknames)
-- The bot will search for users by their username, global handle, or server nickname
-- Results will show success/failure for each guild
-- Invalid commands will receive suggestions for the most likely intended command
-- Common misspellings and aliases are recognized (e.g., "mute" suggests "/timeout")
+### Legacy DM Support
+
+The bot still accepts DM commands for backward compatibility, but slash commands are preferred.
 
 ## Whitelist Management
 
@@ -108,6 +143,7 @@ To add users to the moderation whitelist:
 - Kick Members
 - Ban Members
 - View Server Insights (for presence tracking)
+- Manage Events (for event tracking)
 
 ## Media Caching
 
@@ -123,11 +159,11 @@ To enable/disable programmatically:
 UPDATE system_settings SET setting_value = 'true' WHERE setting_key = 'cache_media';
 ```
 
-## Slash Command Configuration
+## Configuration
 
-### Snort Cooldown
+### Snort Command
 
-The `/snort` command has a configurable global cooldown (default: 30 seconds):
+The `/snort` command has per-user cooldowns and meme support:
 
 ```sql
 -- View current cooldown
@@ -137,12 +173,68 @@ SELECT setting_value FROM system_settings WHERE setting_key = 'snort_cooldown_se
 UPDATE system_settings SET setting_value = '60' WHERE setting_key = 'snort_cooldown_seconds';
 ```
 
+**Meme Setup**: Place image files in `memes/snort/` directory (jpg, png, gif, webp supported)
+
+### Data Retention
+
+The bot automatically cleans up old data after 31 days. This includes:
+- Member status logs
+- Nickname change logs
+- Voice activity logs
+- Closed poll votes
+- Past event data
+
+## Background Jobs
+
+The bot runs several automated tasks:
+
+1. **User Sync** (every 12 hours) - Updates user metadata
+2. **Media Cleanup** (daily at 3 AM) - Removes cached files older than 31 days
+3. **Log Cleanup** (daily at 4 AM) - Removes database logs older than 31 days
+4. **Channel History Scan** (hourly) - Retrieves historical messages
+5. **Poll Expiry Check** (hourly) - Closes expired polls
+
+## Database Schema
+
+The bot uses MariaDB/MySQL with the following main tables:
+
+### Core Tables
+- `users` - Discord user profiles with usernames, handles, and nicknames
+- `message_logs` - All message content with edit tracking
+- `message_attachments` - Media attachment metadata and local paths
+- `voice_logs` - Voice channel activity (join/leave/switch)
+- `forum_logs` - Thread and forum post creation
+
+### Tracking Tables
+- `member_status_logs` - User presence and activity tracking
+- `nickname_logs` - Nickname change history
+- `channel_logs` - Channel modifications and audit trail
+- `dm_logs` - Direct messages to the bot
+- `bot_response_logs` - Bot command responses
+
+### Poll & Event Tables
+- `poll_logs` - Discord poll metadata
+- `poll_answers` - Poll answer options
+- `poll_votes` - User votes on polls
+- `event_logs` - Discord scheduled events
+- `event_interests` - User RSVPs for events
+- `event_update_logs` - Event modification history
+
+### System Tables
+- `command_whitelist` - Users authorized for moderation
+- `super_user_whitelist` - Users with admin privileges
+- `system_settings` - Configurable bot settings
+- `snort_counter` - Global snort statistics
+- `user_snort_cooldowns` - Per-user cooldown tracking
+- `channel_scan_history` - Historical message scan progress
+
 ## Development
 
 ```bash
 cargo fmt       # Format code
 cargo clippy    # Run linter
 cargo test      # Run tests
+cargo doc --open # Generate documentation
 ```
 
 ## Cross-Compilation for Raspberry Pi 5
@@ -229,3 +321,17 @@ sudo systemctl enable sentinel
 sudo systemctl start sentinel
 sudo systemctl status sentinel
 ```
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Acknowledgments
+
+- Built with [Serenity](https://github.com/serenity-rs/serenity) Discord library
+- Uses [SQLx](https://github.com/launchbadge/sqlx) for database operations
+- Scheduling powered by [tokio-cron-scheduler](https://github.com/mvniekerk/tokio-cron-scheduler)

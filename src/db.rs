@@ -323,6 +323,135 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
+        // Poll tracking table
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS poll_logs (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                poll_id VARCHAR(255) NOT NULL,
+                message_id BIGINT NOT NULL,
+                channel_id BIGINT NOT NULL,
+                guild_id BIGINT NOT NULL,
+                creator_id BIGINT NOT NULL,
+                question TEXT,
+                created_at DATETIME NOT NULL,
+                expires_at DATETIME,
+                closed_at DATETIME,
+                is_multiselect BOOLEAN DEFAULT FALSE,
+                INDEX idx_poll_id (poll_id),
+                INDEX idx_message_id (message_id),
+                INDEX idx_channel_id (channel_id),
+                INDEX idx_guild_id (guild_id),
+                INDEX idx_creator_id (creator_id),
+                INDEX idx_expires_at (expires_at)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Poll answer options
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS poll_answers (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                poll_id VARCHAR(255) NOT NULL,
+                answer_id INT NOT NULL,
+                answer_text TEXT,
+                emoji VARCHAR(255),
+                UNIQUE KEY unique_poll_answer (poll_id, answer_id),
+                INDEX idx_poll_id (poll_id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Poll votes/interactions
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS poll_votes (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                poll_id VARCHAR(255) NOT NULL,
+                user_id BIGINT NOT NULL,
+                answer_id INT NOT NULL,
+                voted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_poll_id (poll_id),
+                INDEX idx_user_id (user_id),
+                INDEX idx_voted_at (voted_at),
+                UNIQUE KEY unique_user_vote (poll_id, user_id, answer_id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Discord server events table
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS event_logs (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                event_id BIGINT NOT NULL,
+                guild_id BIGINT NOT NULL,
+                channel_id BIGINT,
+                creator_id BIGINT NOT NULL,
+                name TEXT NOT NULL,
+                description TEXT,
+                start_time DATETIME NOT NULL,
+                end_time DATETIME,
+                location VARCHAR(500),
+                status VARCHAR(50),
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_event_id (event_id),
+                INDEX idx_guild_id (guild_id),
+                INDEX idx_creator_id (creator_id),
+                INDEX idx_start_time (start_time),
+                INDEX idx_status (status)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Event interest/RSVP tracking
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS event_interests (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                event_id BIGINT NOT NULL,
+                user_id BIGINT NOT NULL,
+                interest_type ENUM('interested', 'maybe', 'not_interested', 'attending'),
+                expressed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY unique_user_event (event_id, user_id),
+                INDEX idx_event_id (event_id),
+                INDEX idx_user_id (user_id),
+                INDEX idx_expressed_at (expressed_at)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Event update history
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS event_update_logs (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                event_id BIGINT NOT NULL,
+                field_name VARCHAR(100) NOT NULL,
+                old_value TEXT,
+                new_value TEXT,
+                updated_by BIGINT,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_event_id (event_id),
+                INDEX idx_updated_at (updated_at)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 
@@ -857,5 +986,286 @@ impl Database {
             .into_iter()
             .map(|(channel_id, guild_id)| (channel_id as u64, guild_id as u64))
             .collect())
+    }
+
+    // Poll tracking methods
+    pub async fn log_poll_created(
+        &self,
+        poll_id: &str,
+        message_id: u64,
+        channel_id: u64,
+        guild_id: u64,
+        creator_id: u64,
+        question: &str,
+        expires_at: Option<DateTime<Utc>>,
+        is_multiselect: bool,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO poll_logs (poll_id, message_id, channel_id, guild_id, creator_id, question, created_at, expires_at, is_multiselect)
+            VALUES (?, ?, ?, ?, ?, ?, NOW(), ?, ?)
+            "#,
+        )
+        .bind(poll_id)
+        .bind(message_id as i64)
+        .bind(channel_id as i64)
+        .bind(guild_id as i64)
+        .bind(creator_id as i64)
+        .bind(question)
+        .bind(expires_at)
+        .bind(is_multiselect)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn log_poll_answer(
+        &self,
+        poll_id: &str,
+        answer_id: u32,
+        answer_text: &str,
+        emoji: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO poll_answers (poll_id, answer_id, answer_text, emoji)
+            VALUES (?, ?, ?, ?)
+            "#,
+        )
+        .bind(poll_id)
+        .bind(answer_id as i32)
+        .bind(answer_text)
+        .bind(emoji)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn log_poll_vote(&self, poll_id: &str, user_id: u64, answer_id: u32) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO poll_votes (poll_id, user_id, answer_id)
+            VALUES (?, ?, ?)
+            ON DUPLICATE KEY UPDATE voted_at = NOW()
+            "#,
+        )
+        .bind(poll_id)
+        .bind(user_id as i64)
+        .bind(answer_id as i32)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn remove_poll_vote(
+        &self,
+        poll_id: &str,
+        user_id: u64,
+        answer_id: u32,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            DELETE FROM poll_votes 
+            WHERE poll_id = ? AND user_id = ? AND answer_id = ?
+            "#,
+        )
+        .bind(poll_id)
+        .bind(user_id as i64)
+        .bind(answer_id as i32)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn close_poll(&self, poll_id: &str) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE poll_logs 
+            SET closed_at = NOW() 
+            WHERE poll_id = ? AND closed_at IS NULL
+            "#,
+        )
+        .bind(poll_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    // Event tracking methods
+    pub async fn log_event_created(
+        &self,
+        event_id: u64,
+        guild_id: u64,
+        channel_id: Option<u64>,
+        creator_id: u64,
+        name: &str,
+        description: Option<&str>,
+        start_time: DateTime<Utc>,
+        end_time: Option<DateTime<Utc>>,
+        location: Option<&str>,
+        status: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO event_logs (event_id, guild_id, channel_id, creator_id, name, description, start_time, end_time, location, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE
+                name = VALUES(name),
+                description = VALUES(description),
+                start_time = VALUES(start_time),
+                end_time = VALUES(end_time),
+                location = VALUES(location),
+                status = VALUES(status)
+            "#,
+        )
+        .bind(event_id as i64)
+        .bind(guild_id as i64)
+        .bind(channel_id.map(|id| id as i64))
+        .bind(creator_id as i64)
+        .bind(name)
+        .bind(description)
+        .bind(start_time)
+        .bind(end_time)
+        .bind(location)
+        .bind(status)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn log_event_interest(
+        &self,
+        event_id: u64,
+        user_id: u64,
+        interest_type: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO event_interests (event_id, user_id, interest_type)
+            VALUES (?, ?, ?)
+            ON DUPLICATE KEY UPDATE 
+                interest_type = VALUES(interest_type),
+                expressed_at = NOW()
+            "#,
+        )
+        .bind(event_id as i64)
+        .bind(user_id as i64)
+        .bind(interest_type)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn remove_event_interest(&self, event_id: u64, user_id: u64) -> Result<()> {
+        sqlx::query(
+            r#"
+            DELETE FROM event_interests 
+            WHERE event_id = ? AND user_id = ?
+            "#,
+        )
+        .bind(event_id as i64)
+        .bind(user_id as i64)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn log_event_update(
+        &self,
+        event_id: u64,
+        field_name: &str,
+        old_value: Option<&str>,
+        new_value: Option<&str>,
+        updated_by: Option<u64>,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO event_update_logs (event_id, field_name, old_value, new_value, updated_by)
+            VALUES (?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(event_id as i64)
+        .bind(field_name)
+        .bind(old_value)
+        .bind(new_value)
+        .bind(updated_by.map(|id| id as i64))
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn cleanup_old_status_logs(&self, days: i64) -> Result<u64> {
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(days);
+
+        let result = sqlx::query("DELETE FROM member_status_logs WHERE timestamp < ?")
+            .bind(cutoff)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(result.rows_affected())
+    }
+
+    pub async fn cleanup_old_logs(&self, days: i64) -> Result<(u64, u64, u64, u64, u64)> {
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(days);
+
+        // Clean up old nickname logs
+        let nickname_result = sqlx::query("DELETE FROM nickname_logs WHERE timestamp < ?")
+            .bind(cutoff)
+            .execute(&self.pool)
+            .await?;
+
+        // Clean up old voice logs
+        let voice_result = sqlx::query("DELETE FROM voice_logs WHERE timestamp < ?")
+            .bind(cutoff)
+            .execute(&self.pool)
+            .await?;
+
+        // Clean up old poll votes (for closed polls)
+        let poll_votes_result = sqlx::query(
+            r#"
+            DELETE pv FROM poll_votes pv
+            INNER JOIN poll_logs pl ON pv.poll_id = pl.poll_id
+            WHERE pl.closed_at IS NOT NULL AND pl.closed_at < ?
+            "#,
+        )
+        .bind(cutoff)
+        .execute(&self.pool)
+        .await?;
+
+        // Clean up old event interests (for past events)
+        let event_interests_result = sqlx::query(
+            r#"
+            DELETE ei FROM event_interests ei
+            INNER JOIN event_logs el ON ei.event_id = el.event_id
+            WHERE el.end_time IS NOT NULL AND el.end_time < ?
+            "#,
+        )
+        .bind(cutoff)
+        .execute(&self.pool)
+        .await?;
+
+        // Clean up old event update logs
+        let event_updates_result =
+            sqlx::query("DELETE FROM event_update_logs WHERE updated_at < ?")
+                .bind(cutoff)
+                .execute(&self.pool)
+                .await?;
+
+        Ok((
+            nickname_result.rows_affected(),
+            voice_result.rows_affected(),
+            poll_votes_result.rows_affected(),
+            event_interests_result.rows_affected(),
+            event_updates_result.rows_affected(),
+        ))
     }
 }
