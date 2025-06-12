@@ -5,6 +5,18 @@ All notable changes to Sentinel Discord Bot will be documented in this file.
 ## [Unreleased] - 2025-06-11
 
 ### Added
+- **Super User Meme Management** - DM media attachments to organize into folders
+  - Super users can DM images, videos, or GIFs to the bot
+  - Supports multiple attachments in a single message
+  - Bot responds with a multi-select poll to choose storage folders
+  - Poll closes immediately upon voting for instant feedback
+  - Automatically lists all subfolders in the `memes/` directory
+  - Option to create new folders on the fly
+  - Files are saved with unique UUIDs to prevent conflicts
+  - Supports multiple folder selection for cross-categorization
+  - Progress feedback during download and save operations
+  - Files can be saved to multiple folders simultaneously
+
 - **Personal Media Watchlist** - Track and manage your entertainment backlog
   - `/watchlist view` - See your personal watchlist or top community recommendations
   - `/watchlist add` - Add media to your watchlist with type, title, URL, and priority

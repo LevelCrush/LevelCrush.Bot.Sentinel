@@ -970,7 +970,7 @@ impl Handler {
                                 .description("Based on what everyone's talking about!")
                                 .colour(Colour::GOLD);
                             
-                            for (media_type, title, avg_confidence, mentions, url) in items {
+                            for (media_type, title, _avg_confidence, mentions, url) in items {
                                 let emoji = match media_type.as_str() {
                                     "anime" => "🎌",
                                     "tv_show" => "📺",
@@ -1325,6 +1325,320 @@ impl Handler {
         }
     }
 
+    async fn handle_super_user_media_attachments(&self, ctx: &Context, msg: &Message) {
+        use serenity::all::{CreateMessage, CreatePoll, CreatePollAnswer};
+        
+        info!("[SUPER USER MEDIA] {} sent {} attachment(s)", msg.author.name, msg.attachments.len());
+        
+        // Get list of meme folders
+        let meme_folders = self.get_meme_folders().await;
+        
+        // Create poll for each attachment
+        for attachment in &msg.attachments {
+            // Check if it's an image/video/gif
+            let is_media = attachment.content_type.as_ref()
+                .map(|ct| ct.starts_with("image/") || ct.starts_with("video/") || ct == "image/gif")
+                .unwrap_or(false);
+            
+            if !is_media {
+                let _ = msg.channel_id.say(&ctx.http, 
+                    format!("⚠️ {} is not a supported media file (images/videos/gifs only)", attachment.filename)
+                ).await;
+                continue;
+            }
+            
+            // Create poll answers from meme folders
+            let mut poll_answers = Vec::new();
+            for (i, folder) in meme_folders.iter().enumerate() {
+                if i >= 10 { break; } // Discord limit is 10 answers
+                
+                let answer = CreatePollAnswer::new()
+                    .text(folder.clone());
+                poll_answers.push(answer);
+            }
+            
+            // Add option to create new folder
+            if poll_answers.len() < 10 {
+                poll_answers.push(CreatePollAnswer::new()
+                    .text("📁 Create new folder".to_string()));
+            }
+            
+            // Create the poll with all answers at once
+            let poll = CreatePoll::new()
+                .question(format!("Where should I save '{}'?", attachment.filename))
+                .answers(poll_answers)
+                .duration(std::time::Duration::from_secs(3600)) // 1 hour duration
+                .allow_multiselect();
+            
+            // Send poll message
+            let poll_msg = CreateMessage::new()
+                .content(format!("🎨 New meme from **{}**!\nSelect folder(s) to save to:", msg.author.name))
+                .poll(poll);
+            
+            match msg.channel_id.send_message(&ctx.http, poll_msg).await {
+                Ok(poll_message) => {
+                    info!("Created poll for attachment {} (poll message {})", attachment.filename, poll_message.id);
+                    
+                    // Store the attachment info for later processing when votes come in
+                    // We'll use the poll message ID as the key
+                    let poll_key = format!("meme_poll_{}_{}", msg.channel_id.get(), poll_message.id.get());
+                    let attachment_data = format!("{}|{}|{}", attachment.url, attachment.filename, msg.author.id.get());
+                    
+                    // Store in system settings temporarily (we'll process it when votes come in)
+                    if let Err(e) = self.db.set_setting(&poll_key, &attachment_data).await {
+                        error!("Failed to store poll attachment data: {}", e);
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to create poll for attachment: {}", e);
+                    let _ = msg.channel_id.say(&ctx.http, "❌ Failed to create poll for this attachment").await;
+                }
+            }
+        }
+    }
+    
+    async fn process_meme_poll_vote(&self, ctx: &Context, message: &Message, poll: &serenity::all::Poll, answer_id: usize, attachment_data: &str) {
+        use reqwest;
+        use tokio::fs;
+        use uuid::Uuid;
+        use serenity::all::EditMessage;
+        
+        // Parse attachment data (url|filename|user_id)
+        let parts: Vec<&str> = attachment_data.split('|').collect();
+        if parts.len() != 3 {
+            error!("Invalid attachment data format");
+            return;
+        }
+        
+        let url = parts[0];
+        let original_filename = parts[1];
+        let uploader_id = parts[2].parse::<u64>().unwrap_or(0);
+        
+        // Check if we've already started processing this poll
+        let processing_key = format!("meme_processing_{}_{}", message.channel_id.get(), message.id.get());
+        if self.db.get_setting(&processing_key).await.unwrap_or(None).is_some() {
+            // Already processing, just add this vote to the list
+            return;
+        }
+        
+        // Mark as processing
+        let _ = self.db.set_setting(&processing_key, "true").await;
+        
+        // Close the poll immediately by editing the message to remove it
+        let edit_msg = EditMessage::new()
+            .content(format!("🎨 Processing meme: **{}**...", original_filename));
+        
+        if let Err(e) = message.channel_id.edit_message(&ctx.http, message.id, edit_msg).await {
+            error!("Failed to close poll: {}", e);
+        }
+        
+        // Get all votes for this poll to handle multiselect
+        let poll_id = format!("{}_{}", message.channel_id.get(), message.id.get());
+        let votes = self.db.get_poll_votes(&poll_id, uploader_id).await.unwrap_or_default();
+        
+        // Collect all selected folders
+        let mut selected_folders = Vec::new();
+        
+        // Always include the current vote
+        if let Some(answer) = poll.answers.get(answer_id) {
+            if let Some(folder_name) = &answer.poll_media.text {
+                selected_folders.push(folder_name.clone());
+            }
+        }
+        
+        // Add any other votes from this user
+        for vote_id in votes {
+            if let Some(answer) = poll.answers.get(vote_id as usize) {
+                if let Some(folder_name) = &answer.poll_media.text {
+                    if !selected_folders.contains(folder_name) {
+                        selected_folders.push(folder_name.clone());
+                    }
+                }
+            }
+        }
+        
+        // Check if any folder is "Create new folder"
+        if selected_folders.iter().any(|f| f == "📁 Create new folder") {
+            // Send a message asking for the new folder name
+            let _ = message.channel_id.say(&ctx.http, 
+                "Please reply with the name for the new folder (alphanumeric characters, dashes, and underscores only):"
+            ).await;
+            
+            // Store state for handling the reply
+            let state_key = format!("awaiting_folder_name_{}", message.channel_id.get());
+            let _ = self.db.set_setting(&state_key, attachment_data).await;
+            
+            // Clean up processing flag
+            let _ = self.db.delete_setting(&processing_key).await;
+            return;
+        }
+        
+        // Download and save to all selected folders
+        self.download_and_save_meme(ctx, message, url, original_filename, &selected_folders, &processing_key).await;
+    }
+    
+    async fn download_and_save_meme(
+        &self,
+        ctx: &Context,
+        message: &Message,
+        url: &str,
+        original_filename: &str,
+        folders: &[String],
+        processing_key: &str,
+    ) {
+        use reqwest;
+        use tokio::fs;
+        use uuid::Uuid;
+        use serenity::all::EditMessage;
+        
+        // Download the file once
+        match reqwest::get(url).await {
+            Ok(response) => {
+                if let Ok(bytes) = response.bytes().await {
+                    // Get file extension
+                    let extension = std::path::Path::new(original_filename)
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("png");
+                    
+                    // Generate unique filename
+                    let new_filename = format!("{}.{}", Uuid::new_v4(), extension);
+                    
+                    let mut saved_folders = Vec::new();
+                    let mut failed_folders = Vec::new();
+                    
+                    // Save to each selected folder
+                    for folder_name in folders {
+                        let folder_path = format!("./memes/{}", folder_name);
+                        let file_path = format!("{}/{}", folder_path, new_filename);
+                        
+                        // Ensure folder exists
+                        if let Err(e) = fs::create_dir_all(&folder_path).await {
+                            error!("Failed to create folder {}: {}", folder_path, e);
+                            failed_folders.push(folder_name.clone());
+                            continue;
+                        }
+                        
+                        // Save the file
+                        match fs::write(&file_path, &bytes).await {
+                            Ok(_) => {
+                                info!("Saved meme to {}", file_path);
+                                saved_folders.push(folder_name.clone());
+                            }
+                            Err(e) => {
+                                error!("Failed to save file to {}: {}", file_path, e);
+                                failed_folders.push(folder_name.clone());
+                            }
+                        }
+                    }
+                    
+                    // Update the message with results
+                    let result_msg = if !saved_folders.is_empty() {
+                        if saved_folders.len() == 1 {
+                            format!("✅ Successfully saved **{}** to folder **{}**!", original_filename, saved_folders[0])
+                        } else {
+                            format!("✅ Successfully saved **{}** to {} folders: **{}**!", 
+                                original_filename, 
+                                saved_folders.len(),
+                                saved_folders.join("**, **"))
+                        }
+                    } else {
+                        format!("❌ Failed to save **{}** to any folder", original_filename)
+                    };
+                    
+                    let edit_msg = EditMessage::new().content(result_msg);
+                    let _ = message.channel_id.edit_message(&ctx.http, message.id, edit_msg).await;
+                    
+                    // Clean up the poll data from settings
+                    let poll_key = format!("meme_poll_{}_{}", message.channel_id.get(), message.id.get());
+                    let _ = self.db.delete_setting(&poll_key).await;
+                    let _ = self.db.delete_setting(&processing_key).await;
+                } else {
+                    // Failed to get bytes
+                    let error_msg = EditMessage::new()
+                        .content(format!("❌ Failed to download **{}** - Invalid response", original_filename));
+                    
+                    let _ = message.channel_id.edit_message(&ctx.http, message.id, error_msg).await;
+                    let _ = self.db.delete_setting(&processing_key).await;
+                }
+            }
+            Err(e) => {
+                error!("Failed to download attachment: {}", e);
+                
+                // Update the message with download error
+                let error_msg = EditMessage::new()
+                    .content(format!("❌ Failed to download **{}** - Network error", original_filename));
+                
+                let _ = message.channel_id.edit_message(&ctx.http, message.id, error_msg).await;
+                let _ = self.db.delete_setting(&processing_key).await;
+            }
+        }
+    }
+
+    async fn save_meme_to_folder(&self, ctx: &Context, msg: &Message, folder_name: &str, attachment_data: &str) {
+        // Parse attachment data (url|filename|user_id)
+        let parts: Vec<&str> = attachment_data.split('|').collect();
+        if parts.len() != 3 {
+            error!("Invalid attachment data format");
+            return;
+        }
+        
+        let url = parts[0];
+        let original_filename = parts[1];
+        
+        // Use a dummy processing key since this is for new folder creation
+        let processing_key = format!("meme_processing_{}_new_folder", msg.channel_id.get());
+        
+        // Download and save to the new folder
+        self.download_and_save_meme(ctx, msg, url, original_filename, &[folder_name.to_string()], &processing_key).await;
+    }
+
+    async fn get_meme_folders(&self) -> Vec<String> {
+        use tokio::fs;
+        
+        let memes_dir = "./memes";
+        let mut folders = Vec::new();
+        
+        // Ensure memes directory exists
+        if let Err(e) = fs::create_dir_all(memes_dir).await {
+            error!("Failed to create memes directory: {}", e);
+            return folders;
+        }
+        
+        // Read subdirectories
+        match fs::read_dir(memes_dir).await {
+            Ok(mut entries) => {
+                while let Ok(Some(entry)) = entries.next_entry().await {
+                    if let Ok(metadata) = entry.metadata().await {
+                        if metadata.is_dir() {
+                            if let Some(folder_name) = entry.file_name().to_str() {
+                                folders.push(folder_name.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Failed to read memes directory: {}", e);
+            }
+        }
+        
+        // Sort folders alphabetically
+        folders.sort();
+        
+        // If no folders exist, create a default one
+        if folders.is_empty() {
+            let default_folder = "general";
+            if let Err(e) = fs::create_dir_all(format!("{}/{}", memes_dir, default_folder)).await {
+                error!("Failed to create default meme folder: {}", e);
+            } else {
+                folders.push(default_folder.to_string());
+            }
+        }
+        
+        folders
+    }
+
     async fn handle_autocomplete(
         &self,
         ctx: &Context,
@@ -1414,7 +1728,37 @@ impl EventHandler for Handler {
                 error!("Failed to log DM message: {}", e);
             }
 
-            if let Err(e) = self.command_handler.handle_dm_command(&ctx, &msg).await {
+            // Check if this is a reply for new folder name
+            let state_key = format!("awaiting_folder_name_{}", msg.channel_id.get());
+            if let Ok(Some(attachment_data)) = self.db.get_setting(&state_key).await {
+                // Validate folder name
+                let folder_name = msg.content.trim();
+                if folder_name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') && !folder_name.is_empty() {
+                    // Create the folder
+                    let folder_path = format!("./memes/{}", folder_name);
+                    if let Err(e) = tokio::fs::create_dir_all(&folder_path).await {
+                        let _ = msg.channel_id.say(&ctx.http, 
+                            format!("❌ Failed to create folder: {}", e)
+                        ).await;
+                    } else {
+                        // Save the meme to the new folder
+                        self.save_meme_to_folder(&ctx, &msg, folder_name, &attachment_data).await;
+                        
+                        // Clear the state
+                        let _ = self.db.set_setting(&state_key, "").await;
+                    }
+                } else {
+                    let _ = msg.channel_id.say(&ctx.http, 
+                        "❌ Invalid folder name. Please use only letters, numbers, dashes, and underscores."
+                    ).await;
+                }
+                return;
+            }
+            
+            // Check if super user sent media attachments
+            if !msg.attachments.is_empty() && self.db.is_super_user(msg.author.id.get()).await.unwrap_or(false) {
+                self.handle_super_user_media_attachments(&ctx, &msg).await;
+            } else if let Err(e) = self.command_handler.handle_dm_command(&ctx, &msg).await {
                 error!("Failed to handle DM command: {}", e);
             }
         } else {
@@ -2694,6 +3038,13 @@ impl EventHandler for Handler {
                     .await
                 {
                     error!("Failed to log poll vote: {}", e);
+                }
+                
+                // Check if this is a meme poll
+                let poll_key = format!("meme_poll_{}_{}", message.channel_id.get(), message_id);
+                if let Ok(Some(attachment_data)) = self.db.get_setting(&poll_key).await {
+                    // Process meme poll vote
+                    self.process_meme_poll_vote(&ctx, &message, poll, answer_id.get() as usize, &attachment_data).await;
                 }
             }
         }

@@ -349,6 +349,14 @@ All commands are implemented as Discord slash commands:
 
 The bot still processes DM commands for backward compatibility, but slash commands are the preferred method.
 
+**Super User DM Features**:
+- Send media attachments (images/videos/GIFs) directly to the bot via DM
+- Bot creates a multi-select poll to organize media into meme folders
+- Automatically scans `memes/` directory for existing folders
+- Option to create new folders by selecting "📁 Create new folder"
+- Files are saved with UUID filenames to prevent conflicts
+- Multiple folders can be selected to save the same meme in multiple locations
+
 User permissions are validated against the `command_whitelist` and `super_user_whitelist` tables.
 
 **Permission Hierarchy**:

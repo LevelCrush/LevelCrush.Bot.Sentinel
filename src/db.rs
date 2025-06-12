@@ -792,6 +792,20 @@ impl Database {
         Ok(())
     }
 
+    pub async fn delete_setting(&self, key: &str) -> Result<()> {
+        sqlx::query(
+            r#"
+            DELETE FROM system_settings
+            WHERE setting_key = ?
+            "#,
+        )
+        .bind(key)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
     pub async fn get_old_cached_media(&self, days: i64) -> Result<Vec<String>> {
         let cutoff = chrono::Utc::now() - chrono::Duration::days(days);
 
@@ -1165,6 +1179,22 @@ impl Database {
         .await?;
 
         Ok(())
+    }
+
+    pub async fn get_poll_votes(&self, poll_id: &str, user_id: u64) -> Result<Vec<u32>> {
+        let votes: Vec<(u32,)> = sqlx::query_as(
+            r#"
+            SELECT answer_id 
+            FROM poll_votes 
+            WHERE poll_id = ? AND user_id = ?
+            "#,
+        )
+        .bind(poll_id)
+        .bind(user_id as i64)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(votes.into_iter().map(|v| v.0).collect())
     }
 
     // Event tracking methods
