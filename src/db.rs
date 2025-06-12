@@ -521,6 +521,46 @@ impl Database {
         .execute(&self.pool)
         .await?;
 
+        // Global watchlist table
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS global_watchlist (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                media_type ENUM('anime', 'tv_show', 'movie', 'game', 'youtube', 'music', 'other') NOT NULL,
+                title VARCHAR(500) NOT NULL,
+                url TEXT,
+                added_by BIGINT NOT NULL,
+                added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                description TEXT,
+                UNIQUE KEY unique_global_media (media_type, title),
+                INDEX idx_media_type (media_type),
+                INDEX idx_added_at (added_at)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
+        // Global watchlist votes table
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS global_watchlist_votes (
+                id INT PRIMARY KEY AUTO_INCREMENT,
+                watchlist_id INT NOT NULL,
+                user_id BIGINT NOT NULL,
+                vote_type ENUM('up', 'down') DEFAULT 'up',
+                voted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY unique_user_vote (watchlist_id, user_id),
+                FOREIGN KEY (watchlist_id) REFERENCES global_watchlist(id) ON DELETE CASCADE,
+                INDEX idx_watchlist_id (watchlist_id),
+                INDEX idx_user_id (user_id)
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 
@@ -1657,6 +1697,197 @@ impl Database {
         }
 
         Ok(results)
+    }
+
+    // Global watchlist methods
+    pub async fn add_to_global_watchlist(
+        &self,
+        media_type: &str,
+        title: &str,
+        url: Option<&str>,
+        description: Option<&str>,
+        added_by: u64,
+    ) -> Result<u64> {
+        let result = sqlx::query(
+            r#"
+            INSERT INTO global_watchlist (media_type, title, url, description, added_by)
+            VALUES (?, ?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE 
+                url = COALESCE(VALUES(url), url),
+                description = COALESCE(VALUES(description), description),
+                updated_at = NOW()
+            "#,
+        )
+        .bind(media_type)
+        .bind(title)
+        .bind(url)
+        .bind(description)
+        .bind(added_by as i64)
+        .execute(&self.pool)
+        .await?;
+
+        // Get the ID of the inserted/updated item
+        if result.rows_affected() > 0 {
+            let id: (u64,) = sqlx::query_as(
+                "SELECT id FROM global_watchlist WHERE media_type = ? AND title = ?"
+            )
+            .bind(media_type)
+            .bind(title)
+            .fetch_one(&self.pool)
+            .await?;
+            Ok(id.0)
+        } else {
+            Err(anyhow::anyhow!("Failed to add to global watchlist"))
+        }
+    }
+
+    pub async fn vote_global_watchlist(
+        &self,
+        watchlist_id: u64,
+        user_id: u64,
+        vote_type: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO global_watchlist_votes (watchlist_id, user_id, vote_type)
+            VALUES (?, ?, ?)
+            ON DUPLICATE KEY UPDATE 
+                vote_type = VALUES(vote_type),
+                voted_at = NOW()
+            "#,
+        )
+        .bind(watchlist_id as i64)
+        .bind(user_id as i64)
+        .bind(vote_type)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn remove_vote_global_watchlist(
+        &self,
+        watchlist_id: u64,
+        user_id: u64,
+    ) -> Result<bool> {
+        let result = sqlx::query(
+            "DELETE FROM global_watchlist_votes WHERE watchlist_id = ? AND user_id = ?"
+        )
+        .bind(watchlist_id as i64)
+        .bind(user_id as i64)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    pub async fn get_global_watchlist(
+        &self,
+        limit: u32,
+        media_type: Option<&str>,
+    ) -> Result<Vec<(u64, String, String, Option<String>, Option<String>, i64, i64, String)>> {
+        let query = if let Some(media_type) = media_type {
+            sqlx::query_as(
+                r#"
+                SELECT 
+                    gw.id,
+                    gw.media_type,
+                    gw.title,
+                    gw.url,
+                    gw.description,
+                    COALESCE(SUM(CASE WHEN gwv.vote_type = 'up' THEN 1 ELSE 0 END), 0) as upvotes,
+                    COALESCE(SUM(CASE WHEN gwv.vote_type = 'down' THEN 1 ELSE 0 END), 0) as downvotes,
+                    u.username as added_by_username
+                FROM global_watchlist gw
+                LEFT JOIN global_watchlist_votes gwv ON gw.id = gwv.watchlist_id
+                JOIN users u ON gw.added_by = u.discord_user_id
+                WHERE gw.media_type = ?
+                GROUP BY gw.id, gw.media_type, gw.title, gw.url, gw.description, u.username
+                ORDER BY (upvotes - downvotes) DESC, gw.added_at DESC
+                LIMIT ?
+                "#,
+            )
+            .bind(media_type)
+            .bind(limit)
+        } else {
+            sqlx::query_as(
+                r#"
+                SELECT 
+                    gw.id,
+                    gw.media_type,
+                    gw.title,
+                    gw.url,
+                    gw.description,
+                    COALESCE(SUM(CASE WHEN gwv.vote_type = 'up' THEN 1 ELSE 0 END), 0) as upvotes,
+                    COALESCE(SUM(CASE WHEN gwv.vote_type = 'down' THEN 1 ELSE 0 END), 0) as downvotes,
+                    u.username as added_by_username
+                FROM global_watchlist gw
+                LEFT JOIN global_watchlist_votes gwv ON gw.id = gwv.watchlist_id
+                JOIN users u ON gw.added_by = u.discord_user_id
+                GROUP BY gw.id, gw.media_type, gw.title, gw.url, gw.description, u.username
+                ORDER BY (upvotes - downvotes) DESC, gw.added_at DESC
+                LIMIT ?
+                "#,
+            )
+            .bind(limit)
+        };
+
+        let items: Vec<(u64, String, String, Option<String>, Option<String>, i64, i64, String)> = 
+            query.fetch_all(&self.pool).await?;
+
+        Ok(items)
+    }
+
+    pub async fn get_user_vote_on_global_item(
+        &self,
+        watchlist_id: u64,
+        user_id: u64,
+    ) -> Result<Option<String>> {
+        let vote: Option<(String,)> = sqlx::query_as(
+            "SELECT vote_type FROM global_watchlist_votes WHERE watchlist_id = ? AND user_id = ?"
+        )
+        .bind(watchlist_id as i64)
+        .bind(user_id as i64)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(vote.map(|v| v.0))
+    }
+
+    pub async fn search_global_watchlist(
+        &self,
+        query: &str,
+        limit: u32,
+    ) -> Result<Vec<(u64, String, String, Option<String>, Option<String>, i64, i64, String)>> {
+        let search_pattern = format!("%{}%", query);
+
+        let items: Vec<(u64, String, String, Option<String>, Option<String>, i64, i64, String)> = sqlx::query_as(
+            r#"
+            SELECT 
+                gw.id,
+                gw.media_type,
+                gw.title,
+                gw.url,
+                gw.description,
+                COALESCE(SUM(CASE WHEN gwv.vote_type = 'up' THEN 1 ELSE 0 END), 0) as upvotes,
+                COALESCE(SUM(CASE WHEN gwv.vote_type = 'down' THEN 1 ELSE 0 END), 0) as downvotes,
+                u.username as added_by_username
+            FROM global_watchlist gw
+            LEFT JOIN global_watchlist_votes gwv ON gw.id = gwv.watchlist_id
+            JOIN users u ON gw.added_by = u.discord_user_id
+            WHERE gw.title LIKE ? OR gw.description LIKE ?
+            GROUP BY gw.id, gw.media_type, gw.title, gw.url, gw.description, u.username
+            ORDER BY (upvotes - downvotes) DESC, gw.added_at DESC
+            LIMIT ?
+            "#,
+        )
+        .bind(&search_pattern)
+        .bind(&search_pattern)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(items)
     }
 
     pub async fn cleanup_old_logs(&self, days: i64) -> Result<(u64, u64, u64, u64, u64)> {

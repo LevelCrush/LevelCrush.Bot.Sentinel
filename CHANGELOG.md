@@ -5,6 +5,16 @@ All notable changes to Sentinel Discord Bot will be documented in this file.
 ## [Unreleased] - 2025-06-11
 
 ### Added
+- **Global Community Watchlist** - Collaborative watchlist with voting system
+  - `/global view [type]` - View the global watchlist, optionally filtered by media type
+  - `/global add` - Add media to the global watchlist with title, type, URL, and description
+  - `/global vote` - Vote on items (upvote/downvote/remove vote) to influence priority
+  - `/global search` - Search the global watchlist by title or description
+  - Items are automatically sorted by net votes (upvotes - downvotes)
+  - Shows who added each item and current vote counts
+  - Users automatically upvote items they add
+  - Vote changes update item priority in real-time
+
 - **Media Recommendations Export** - Export your watchlist and recommendations in multiple formats
   - `/watchlist export` - Export your personal watchlist or community recommendations
   - Choose between CSV, JSON, or Markdown formats
@@ -31,12 +41,9 @@ All notable changes to Sentinel Discord Bot will be documented in this file.
   - `/watchlist add` - Add media to your watchlist with type, title, URL, and priority
   - `/watchlist remove` - Remove items from your watchlist
   - `/watchlist priority` - Reprioritize items in your watchlist
-  - `/watchlist scan` - Scan the current channel's last 100 messages for media mentions
   - Priority-based sorting (1-100 scale)
   - Status tracking (plan to watch, watching, completed, etc.)
-  - Real-time progress updates during channel scanning
-  - Shows who mentioned each media item and how many times
-  - Integrates with media recommendations from message scanning
+  - Shows top community recommendations based on automated detection
 
 - **Media Recommendations Scanner** - Intelligent content analysis for media mentions
   - Real-time detection in new messages, edited messages, polls, and events

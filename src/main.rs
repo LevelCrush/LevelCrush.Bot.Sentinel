@@ -1183,25 +1183,6 @@ impl Handler {
                     }
                 }
             }
-            "scan" => {
-                // Get the channel ID where the command was used
-                let channel_id = command.channel_id;
-
-                // Send initial ephemeral message
-                let response = CreateInteractionResponse::Message(
-                    CreateInteractionResponseMessage::new()
-                        .content("🔍 Starting channel scan for media recommendations...")
-                        .ephemeral(true),
-                );
-
-                if let Err(e) = command.create_response(&ctx.http, response).await {
-                    error!("Failed to send initial scan response: {}", e);
-                    return;
-                }
-
-                // Perform the scan
-                self.scan_channel_for_media(ctx, command, channel_id).await;
-            }
             "export" => {
                 if let serenity::all::CommandDataOptionValue::SubCommand(opts) = subcommand_value {
                     let data_type = opts
@@ -1293,176 +1274,309 @@ impl Handler {
         }
     }
 
-    async fn scan_channel_for_media(
+
+    async fn handle_global_slash(
         &self,
         ctx: &Context,
         command: &serenity::all::CommandInteraction,
-        channel_id: serenity::all::ChannelId,
     ) {
-        use crate::media_detector::{MediaDetector, MediaRecommendation};
-        use std::collections::HashMap;
+        let user_id = command.user.id.get();
 
-        // Fetch the last 100 messages from the channel
-        let messages = match channel_id
-            .messages(&ctx.http, serenity::all::GetMessages::new().limit(100))
-            .await
-        {
-            Ok(msgs) => msgs,
-            Err(e) => {
-                error!("Failed to fetch messages: {}", e);
-                // Send error followup
-                let followup = serenity::all::CreateInteractionResponseFollowup::new()
-                    .content("❌ Failed to fetch messages from this channel.")
-                    .ephemeral(true);
-                command.create_followup(&ctx.http, followup).await.ok();
-                return;
-            }
-        };
-
-        // Send progress update
-        let followup = serenity::all::CreateInteractionResponseFollowup::new()
-            .content(format!(
-                "📊 Scanning {} messages for media recommendations...",
-                messages.len()
-            ))
-            .ephemeral(true);
-        command.create_followup(&ctx.http, followup).await.ok();
-
-        // Create media detector
-        let detector = MediaDetector::new();
-        let mut all_recommendations: HashMap<String, (MediaRecommendation, i32, Vec<String>)> =
-            HashMap::new();
-        let mut scanned_count = 0;
-
-        // Scan messages
-        for msg in messages.iter() {
-            // Skip bot messages
-            if msg.author.bot {
-                continue;
-            }
-
-            scanned_count += 1;
-
-            // Detect media in this message
-            let recommendations = detector.detect_media(&msg.content);
-
-            for rec in recommendations {
-                let key = format!("{}:{}", rec.media_type, rec.title);
-
-                all_recommendations
-                    .entry(key)
-                    .and_modify(|(existing, count, users)| {
-                        *count += 1;
-                        // Update confidence if higher
-                        if rec.confidence > existing.confidence {
-                            existing.confidence = rec.confidence;
-                        }
-                        // Update URL if we found one and didn't have one before
-                        if existing.url.is_none() && rec.url.is_some() {
-                            existing.url = rec.url.clone();
-                        }
-                        // Track who mentioned it
-                        let user_tag = format!(
-                            "{}#{}",
-                            msg.author.name,
-                            msg.author
-                                .discriminator
-                                .map(|d| d.to_string())
-                                .unwrap_or_else(|| "0000".to_string())
-                        );
-                        if !users.contains(&user_tag) {
-                            users.push(user_tag);
-                        }
-                    })
-                    .or_insert((
-                        rec,
-                        1,
-                        vec![format!(
-                            "{}#{}",
-                            msg.author.name,
-                            msg.author
-                                .discriminator
-                                .map(|d| d.to_string())
-                                .unwrap_or_else(|| "0000".to_string())
-                        )],
-                    ));
-            }
-
-            // Send progress update every 25 messages
-            if scanned_count % 25 == 0 {
-                let progress_followup = serenity::all::CreateInteractionResponseFollowup::new()
-                    .content(format!("⏳ Scanned {} messages...", scanned_count))
-                    .ephemeral(true);
-                command
-                    .create_followup(&ctx.http, progress_followup)
-                    .await
-                    .ok();
-            }
+        // Get the subcommand
+        let subcommand_opt = command.data.options.first();
+        if subcommand_opt.is_none() {
+            let response = CreateInteractionResponse::Message(
+                CreateInteractionResponseMessage::new()
+                    .content("No subcommand provided")
+                    .ephemeral(true),
+            );
+            command.create_response(&ctx.http, response).await.ok();
+            return;
         }
 
-        // Sort recommendations by mention count
-        let mut sorted_recommendations: Vec<_> = all_recommendations.into_iter().collect();
-        sorted_recommendations.sort_by(|a, b| b.1 .1.cmp(&a.1 .1));
+        let subcommand = &subcommand_opt.unwrap().name;
+        let subcommand_value = &subcommand_opt.unwrap().value;
 
-        // Create the final embed
-        if sorted_recommendations.is_empty() {
-            let followup = serenity::all::CreateInteractionResponseFollowup::new()
-                .content("No media recommendations found in the last 100 messages.")
-                .ephemeral(false);
-            command.create_followup(&ctx.http, followup).await.ok();
-        } else {
-            let mut embed = CreateEmbed::new()
-                .title("📺 Media Recommendations from Channel Scan")
-                .description(format!(
-                    "Found {} unique media items from {} messages",
-                    sorted_recommendations.len(),
-                    scanned_count
-                ))
-                .colour(Colour::PURPLE)
-                .footer(serenity::all::CreateEmbedFooter::new(
-                    "Use /watchlist add to save items to your personal list",
-                ));
-
-            // Add top 10 recommendations
-            for (i, (_key, (rec, count, users))) in
-                sorted_recommendations.iter().take(10).enumerate()
-            {
-                let emoji = match rec.media_type {
-                    "anime" => "🎌",
-                    "tv_show" => "📺",
-                    "movie" => "🎬",
-                    "game" => "🎮",
-                    "youtube" => "📹",
-                    "music" => "🎵",
-                    _ => "📋",
-                };
-
-                let users_str = if users.len() > 3 {
-                    format!("{} and {} others", users[..3].join(", "), users.len() - 3)
+        match subcommand.as_str() {
+            "view" => {
+                let media_type = if let serenity::all::CommandDataOptionValue::SubCommand(opts) = subcommand_value {
+                    opts.iter()
+                        .find(|o| o.name == "type")
+                        .and_then(|o| o.value.as_str())
+                        .filter(|&t| t != "all")
                 } else {
-                    users.join(", ")
+                    None
                 };
 
-                let field_value = format!(
-                    "{} **{}**\nMentioned {} times by: {}\nConfidence: {:.0}%{}",
-                    emoji,
-                    rec.media_type,
-                    count,
-                    users_str,
-                    rec.confidence * 100.0,
-                    rec.url
-                        .as_ref()
-                        .map(|u| format!("\n[Link]({})", u))
-                        .unwrap_or_default()
-                );
+                match self.db.get_global_watchlist(20, media_type).await {
+                    Ok(items) if !items.is_empty() => {
+                        let mut embed = CreateEmbed::new()
+                            .title("🌍 Global Community Watchlist")
+                            .description("Vote on items to help prioritize what the community should watch!")
+                            .colour(Colour::GOLD);
 
-                embed = embed.field(format!("{}. {}", i + 1, rec.title), field_value, false);
+                        for (id, media_type, title, url, description, upvotes, downvotes, added_by) in items.iter().take(10) {
+                            let net_votes = upvotes - downvotes;
+                            let emoji = match media_type.as_str() {
+                                "anime" => "🎌",
+                                "tv_show" => "📺",
+                                "movie" => "🎬",
+                                "game" => "🎮",
+                                "youtube" => "📹",
+                                "music" => "🎵",
+                                _ => "📋",
+                            };
+
+                            let mut field_value = format!(
+                                "**ID**: {} | {} **{}**\n👍 {} 👎 {} (Net: {})\nAdded by: {}",
+                                id, emoji, media_type, upvotes, downvotes, net_votes, added_by
+                            );
+
+                            if let Some(desc) = description {
+                                field_value.push_str(&format!("\n📝 {}", desc));
+                            }
+
+                            if let Some(url) = url {
+                                field_value.push_str(&format!("\n🔗 [Link]({})", url));
+                            }
+
+                            embed = embed.field(title, field_value, false);
+                        }
+
+                        embed = embed.footer(serenity::all::CreateEmbedFooter::new(
+                            "Use /global vote <id> to vote on items"
+                        ));
+
+                        let response = CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new().embed(embed),
+                        );
+                        command.create_response(&ctx.http, response).await.ok();
+                    }
+                    Ok(_) => {
+                        let response = CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new()
+                                .content("The global watchlist is empty! Use `/global add` to add items.")
+                                .ephemeral(true),
+                        );
+                        command.create_response(&ctx.http, response).await.ok();
+                    }
+                    Err(e) => {
+                        error!("Failed to get global watchlist: {}", e);
+                        let response = CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new()
+                                .content("Failed to retrieve global watchlist.")
+                                .ephemeral(true),
+                        );
+                        command.create_response(&ctx.http, response).await.ok();
+                    }
+                }
             }
+            "add" => {
+                if let serenity::all::CommandDataOptionValue::SubCommand(opts) = subcommand_value {
+                    let media_type = opts
+                        .iter()
+                        .find(|o| o.name == "type")
+                        .and_then(|o| o.value.as_str())
+                        .unwrap_or("other");
+                    let title = opts
+                        .iter()
+                        .find(|o| o.name == "title")
+                        .and_then(|o| o.value.as_str())
+                        .unwrap_or("");
+                    let url = opts
+                        .iter()
+                        .find(|o| o.name == "url")
+                        .and_then(|o| o.value.as_str());
+                    let description = opts
+                        .iter()
+                        .find(|o| o.name == "description")
+                        .and_then(|o| o.value.as_str());
 
-            // Send the final visible embed
-            let followup = serenity::all::CreateInteractionResponseFollowup::new().embed(embed);
-            command.create_followup(&ctx.http, followup).await.ok();
+                    match self
+                        .db
+                        .add_to_global_watchlist(media_type, title, url, description, user_id)
+                        .await
+                    {
+                        Ok(item_id) => {
+                            // Automatically upvote the item the user added
+                            let _ = self.db.vote_global_watchlist(item_id, user_id, "up").await;
+
+                            let response = CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content(format!(
+                                        "✅ Added **{}** to the global {} watchlist! (ID: {})\nYou automatically upvoted this item.",
+                                        title, media_type, item_id
+                                    )),
+                            );
+                            command.create_response(&ctx.http, response).await.ok();
+                        }
+                        Err(e) => {
+                            error!("Failed to add to global watchlist: {}", e);
+                            let response = CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content("Failed to add item to global watchlist.")
+                                    .ephemeral(true),
+                            );
+                            command.create_response(&ctx.http, response).await.ok();
+                        }
+                    }
+                }
+            }
+            "vote" => {
+                if let serenity::all::CommandDataOptionValue::SubCommand(opts) = subcommand_value {
+                    let item_id = opts
+                        .iter()
+                        .find(|o| o.name == "id")
+                        .and_then(|o| o.value.as_i64())
+                        .map(|id| id as u64)
+                        .unwrap_or(0);
+                    let vote_action = opts
+                        .iter()
+                        .find(|o| o.name == "vote")
+                        .and_then(|o| o.value.as_str())
+                        .unwrap_or("up");
+
+                    if item_id == 0 {
+                        let response = CreateInteractionResponse::Message(
+                            CreateInteractionResponseMessage::new()
+                                .content("Invalid item ID.")
+                                .ephemeral(true),
+                        );
+                        command.create_response(&ctx.http, response).await.ok();
+                        return;
+                    }
+
+                    let result = match vote_action {
+                        "remove" => self.db.remove_vote_global_watchlist(item_id, user_id).await,
+                        vote_type => self.db.vote_global_watchlist(item_id, user_id, vote_type).await.map(|_| true),
+                    };
+
+                    match result {
+                        Ok(true) => {
+                            let action_text = match vote_action {
+                                "up" => "👍 Upvoted",
+                                "down" => "👎 Downvoted",
+                                "remove" => "🗑️ Removed vote from",
+                                _ => "Voted on",
+                            };
+
+                            let response = CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content(format!("{} item #{}", action_text, item_id))
+                                    .ephemeral(true),
+                            );
+                            command.create_response(&ctx.http, response).await.ok();
+                        }
+                        Ok(false) => {
+                            let response = CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content("You haven't voted on this item yet.")
+                                    .ephemeral(true),
+                            );
+                            command.create_response(&ctx.http, response).await.ok();
+                        }
+                        Err(e) => {
+                            error!("Failed to process vote: {}", e);
+                            let response = CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content("Failed to process your vote. The item might not exist.")
+                                    .ephemeral(true),
+                            );
+                            command.create_response(&ctx.http, response).await.ok();
+                        }
+                    }
+                }
+            }
+            "search" => {
+                if let serenity::all::CommandDataOptionValue::SubCommand(opts) = subcommand_value {
+                    let query = opts
+                        .iter()
+                        .find(|o| o.name == "query")
+                        .and_then(|o| o.value.as_str())
+                        .unwrap_or("");
+
+                    match self.db.search_global_watchlist(query, 10).await {
+                        Ok(items) if !items.is_empty() => {
+                            let mut embed = CreateEmbed::new()
+                                .title(format!("🔍 Search Results for \"{}\"", query))
+                                .colour(Colour::BLUE);
+
+                            for (id, media_type, title, url, description, upvotes, downvotes, added_by) in items {
+                                let net_votes = upvotes - downvotes;
+                                let emoji = match media_type.as_str() {
+                                    "anime" => "🎌",
+                                    "tv_show" => "📺",
+                                    "movie" => "🎬",
+                                    "game" => "🎮",
+                                    "youtube" => "📹",
+                                    "music" => "🎵",
+                                    _ => "📋",
+                                };
+
+                                let mut field_value = format!(
+                                    "**ID**: {} | {} **{}**\n👍 {} 👎 {} (Net: {})\nAdded by: {}",
+                                    id, emoji, media_type, upvotes, downvotes, net_votes, added_by
+                                );
+
+                                if let Some(desc) = description {
+                                    field_value.push_str(&format!("\n📝 {}", desc));
+                                }
+
+                                if let Some(url) = url {
+                                    field_value.push_str(&format!("\n🔗 [Link]({})", url));
+                                }
+
+                                embed = embed.field(title, field_value, false);
+                            }
+
+                            let response = CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .embed(embed)
+                                    .ephemeral(true),
+                            );
+                            command.create_response(&ctx.http, response).await.ok();
+                        }
+                        Ok(_) => {
+                            let response = CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content(format!("No results found for \"{}\"", query))
+                                    .ephemeral(true),
+                            );
+                            command.create_response(&ctx.http, response).await.ok();
+                        }
+                        Err(e) => {
+                            error!("Failed to search global watchlist: {}", e);
+                            let response = CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content("Failed to search global watchlist.")
+                                    .ephemeral(true),
+                            );
+                            command.create_response(&ctx.http, response).await.ok();
+                        }
+                    }
+                }
+            }
+            _ => {
+                let response = CreateInteractionResponse::Message(
+                    CreateInteractionResponseMessage::new()
+                        .content("Unknown subcommand")
+                        .ephemeral(true),
+                );
+                command.create_response(&ctx.http, response).await.ok();
+            }
         }
+
+        // Log the command usage
+        self.db
+            .log_bot_response(
+                user_id,
+                Some("/global"),
+                "slash_command",
+                &format!("Used global {}", subcommand),
+                true,
+            )
+            .await
+            .ok();
     }
 
     async fn handle_watchlist_export(
@@ -1515,6 +1629,19 @@ impl Handler {
                     }
                 }
             }
+            "global" => {
+                match self.db.get_global_watchlist(100, None).await {
+                    Ok(items) => self.generate_global_export(items, format),
+                    Err(e) => {
+                        error!("Failed to get global watchlist for export: {}", e);
+                        let followup = serenity::all::CreateInteractionResponseFollowup::new()
+                            .content("❌ Failed to retrieve global watchlist data.")
+                            .ephemeral(true);
+                        command.create_followup(&ctx.http, followup).await.ok();
+                        return;
+                    }
+                }
+            }
             _ => {
                 let followup = serenity::all::CreateInteractionResponseFollowup::new()
                     .content("❌ Invalid export type.")
@@ -1538,10 +1665,10 @@ impl Handler {
         );
 
         // Send the export as a file attachment
-        let description = if data_type == "watchlist" { 
-            "watchlist".to_string() 
-        } else { 
-            format!("recommendations from the last {} days", days) 
+        let description = match data_type {
+            "watchlist" => "watchlist".to_string(),
+            "global" => "global community watchlist".to_string(),
+            _ => format!("recommendations from the last {} days", days),
         };
         
         let followup = serenity::all::CreateInteractionResponseFollowup::new()
@@ -1748,6 +1875,112 @@ impl Handler {
         match chars.next() {
             None => String::new(),
             Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        }
+    }
+
+    fn generate_global_export(
+        &self,
+        items: Vec<(u64, String, String, Option<String>, Option<String>, i64, i64, String)>,
+        format: &str,
+    ) -> String {
+        match format {
+            "csv" => {
+                let mut csv = String::from("ID,Type,Title,URL,Description,Upvotes,Downvotes,Net Votes,Added By\n");
+                for (id, media_type, title, url, description, upvotes, downvotes, added_by) in items {
+                    let net_votes = upvotes - downvotes;
+                    csv.push_str(&format!(
+                        "{},{},{},{},{},{},{},{},{}\n",
+                        id,
+                        self.escape_csv(&media_type),
+                        self.escape_csv(&title),
+                        self.escape_csv(&url.unwrap_or_default()),
+                        self.escape_csv(&description.unwrap_or_default()),
+                        upvotes,
+                        downvotes,
+                        net_votes,
+                        self.escape_csv(&added_by)
+                    ));
+                }
+                csv
+            }
+            "json" => {
+                let json_items: Vec<serde_json::Value> = items
+                    .into_iter()
+                    .map(|(id, media_type, title, url, description, upvotes, downvotes, added_by)| {
+                        serde_json::json!({
+                            "id": id,
+                            "type": media_type,
+                            "title": title,
+                            "url": url,
+                            "description": description,
+                            "upvotes": upvotes,
+                            "downvotes": downvotes,
+                            "net_votes": upvotes - downvotes,
+                            "added_by": added_by
+                        })
+                    })
+                    .collect();
+                
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "global_watchlist": json_items,
+                    "exported_at": chrono::Utc::now().to_rfc3339()
+                })).unwrap_or_else(|_| "[]".to_string())
+            }
+            "markdown" => {
+                let mut md = String::from("# Global Community Watchlist\n\n");
+                md.push_str(&format!("*Exported on {}*\n\n", chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")));
+                
+                // Group by media type
+                let mut grouped: std::collections::HashMap<String, Vec<_>> = std::collections::HashMap::new();
+                for item in items {
+                    grouped.entry(item.1.clone()).or_insert_with(Vec::new).push(item);
+                }
+                
+                // Sort groups by total net votes
+                let mut sorted_groups: Vec<_> = grouped.into_iter()
+                    .map(|(media_type, mut items)| {
+                        // Sort items within group by net votes
+                        items.sort_by_key(|(_, _, _, _, _, up, down, _)| -(up - down));
+                        (media_type, items)
+                    })
+                    .collect();
+                sorted_groups.sort_by_key(|(_, items)| {
+                    -items.iter().map(|(_, _, _, _, _, up, down, _)| up - down).sum::<i64>()
+                });
+                
+                for (media_type, items) in sorted_groups {
+                    let emoji = match media_type.as_str() {
+                        "anime" => "🎌",
+                        "tv_show" => "📺",
+                        "movie" => "🎬",
+                        "game" => "🎮",
+                        "youtube" => "📹",
+                        "music" => "🎵",
+                        _ => "📋",
+                    };
+                    
+                    md.push_str(&format!("\n## {} {}\n\n", emoji, self.capitalize(&media_type.replace('_', " "))));
+                    
+                    for (id, _, title, url, description, upvotes, downvotes, added_by) in items {
+                        let net_votes = upvotes - downvotes;
+                        md.push_str(&format!("### {} (ID: {})\n", title, id));
+                        md.push_str(&format!("- **Votes**: 👍 {} | 👎 {} | **Net: {}**\n", upvotes, downvotes, net_votes));
+                        md.push_str(&format!("- **Added by**: {}\n", added_by));
+                        if let Some(desc) = description {
+                            if !desc.is_empty() {
+                                md.push_str(&format!("- **Description**: {}\n", desc));
+                            }
+                        }
+                        if let Some(url) = url {
+                            md.push_str(&format!("- **Link**: [{}]({})\n", url, url));
+                        }
+                        md.push('\n');
+                    }
+                }
+                
+                md
+            }
+            _ => String::new()
         }
     }
 
@@ -2759,6 +2992,128 @@ impl EventHandler for Handler {
             Err(e) => error!("Failed to register /whitelist command: {}", e),
         }
 
+        // Register /global command
+        match Command::create_global_command(
+            &ctx.http,
+            serenity::all::CreateCommand::new("global")
+                .description("Manage the global community watchlist")
+                .add_option(
+                    serenity::all::CreateCommandOption::new(
+                        serenity::all::CommandOptionType::SubCommand,
+                        "view",
+                        "View the global watchlist",
+                    )
+                    .add_sub_option(
+                        serenity::all::CreateCommandOption::new(
+                            serenity::all::CommandOptionType::String,
+                            "type",
+                            "Filter by media type",
+                        )
+                        .add_string_choice("all types", "all")
+                        .add_string_choice("anime", "anime")
+                        .add_string_choice("tv show", "tv_show")
+                        .add_string_choice("movie", "movie")
+                        .add_string_choice("game", "game")
+                        .add_string_choice("youtube", "youtube")
+                        .add_string_choice("music", "music")
+                        .add_string_choice("other", "other")
+                        .required(false),
+                    ),
+                )
+                .add_option(
+                    serenity::all::CreateCommandOption::new(
+                        serenity::all::CommandOptionType::SubCommand,
+                        "add",
+                        "Add media to the global watchlist",
+                    )
+                    .add_sub_option(
+                        serenity::all::CreateCommandOption::new(
+                            serenity::all::CommandOptionType::String,
+                            "type",
+                            "Media type",
+                        )
+                        .add_string_choice("anime", "anime")
+                        .add_string_choice("tv show", "tv_show")
+                        .add_string_choice("movie", "movie")
+                        .add_string_choice("game", "game")
+                        .add_string_choice("youtube", "youtube")
+                        .add_string_choice("music", "music")
+                        .add_string_choice("other", "other")
+                        .required(true),
+                    )
+                    .add_sub_option(
+                        serenity::all::CreateCommandOption::new(
+                            serenity::all::CommandOptionType::String,
+                            "title",
+                            "Title of the media",
+                        )
+                        .required(true),
+                    )
+                    .add_sub_option(
+                        serenity::all::CreateCommandOption::new(
+                            serenity::all::CommandOptionType::String,
+                            "url",
+                            "URL or link (optional)",
+                        )
+                        .required(false),
+                    )
+                    .add_sub_option(
+                        serenity::all::CreateCommandOption::new(
+                            serenity::all::CommandOptionType::String,
+                            "description",
+                            "Brief description (optional)",
+                        )
+                        .required(false),
+                    ),
+                )
+                .add_option(
+                    serenity::all::CreateCommandOption::new(
+                        serenity::all::CommandOptionType::SubCommand,
+                        "vote",
+                        "Vote on a global watchlist item",
+                    )
+                    .add_sub_option(
+                        serenity::all::CreateCommandOption::new(
+                            serenity::all::CommandOptionType::Integer,
+                            "id",
+                            "ID of the item to vote on",
+                        )
+                        .required(true),
+                    )
+                    .add_sub_option(
+                        serenity::all::CreateCommandOption::new(
+                            serenity::all::CommandOptionType::String,
+                            "vote",
+                            "Your vote",
+                        )
+                        .add_string_choice("upvote", "up")
+                        .add_string_choice("downvote", "down")
+                        .add_string_choice("remove vote", "remove")
+                        .required(true),
+                    ),
+                )
+                .add_option(
+                    serenity::all::CreateCommandOption::new(
+                        serenity::all::CommandOptionType::SubCommand,
+                        "search",
+                        "Search the global watchlist",
+                    )
+                    .add_sub_option(
+                        serenity::all::CreateCommandOption::new(
+                            serenity::all::CommandOptionType::String,
+                            "query",
+                            "Search query",
+                        )
+                        .required(true),
+                    ),
+                ),
+        )
+        .await
+        {
+            Ok(command) => info!("Registered /global command with ID: {}", command.id),
+            Err(e) => error!("Failed to register /global command: {}", e),
+        }
+
         // Register /watchlist command
         match Command::create_global_command(
             &ctx.http,
@@ -2899,11 +3254,6 @@ impl EventHandler for Handler {
                         .required(true),
                     ),
                 )
-                .add_option(serenity::all::CreateCommandOption::new(
-                    serenity::all::CommandOptionType::SubCommand,
-                    "scan",
-                    "Scan this channel for media recommendations",
-                ))
                 .add_option(
                     serenity::all::CreateCommandOption::new(
                         serenity::all::CommandOptionType::SubCommand,
@@ -2918,6 +3268,7 @@ impl EventHandler for Handler {
                         )
                         .add_string_choice("my watchlist", "watchlist")
                         .add_string_choice("all recommendations", "recommendations")
+                        .add_string_choice("global watchlist", "global")
                         .required(true),
                     )
                     .add_sub_option(
@@ -2981,6 +3332,9 @@ impl EventHandler for Handler {
                     }
                     "watchlist" => {
                         self.handle_watchlist_slash(&ctx, &command).await;
+                    }
+                    "global" => {
+                        self.handle_global_slash(&ctx, &command).await;
                     }
                     "snort" => {
                         if let Some(guild_id) = command.guild_id {

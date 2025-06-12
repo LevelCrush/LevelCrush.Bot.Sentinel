@@ -333,6 +333,7 @@ All commands are implemented as Discord slash commands:
 | `/whitelist <action> <user>`     | Manage command whitelist (add/remove)   | Super users only |
 | `/snort`                         | Snort brightdust! Tracks global count   | Anyone           |
 | `/watchlist [action]`            | Manage personal media watchlist         | Anyone           |
+| `/global [action]`               | Manage global community watchlist       | Anyone           |
 
 **User Autocomplete**: All commands that target users (`/kick`, `/ban`, `/timeout`, `/whitelist`) provide autocomplete suggestions from the database. Start typing a username, handle, or nickname to see matching users.
 
@@ -343,11 +344,23 @@ All commands are implemented as Discord slash commands:
 - `/watchlist add <type> <title> [url] [priority]` - Add media to your watchlist with optional URL and priority (1-100)
 - `/watchlist remove <type> <title>` - Remove an item from your watchlist
 - `/watchlist priority <type> <title> <new_priority>` - Update priority of an existing item
-- `/watchlist scan` - Scan the current channel's last 100 messages for media recommendations with real-time progress updates
 - `/watchlist export <data> <format> [days]` - Export your watchlist or recommendations
-  - Data options: `watchlist` (your personal list) or `recommendations` (community picks)
+  - Data options: `watchlist` (your personal list), `recommendations` (community picks), or `global` (global watchlist)
   - Format options: `CSV`, `JSON`, or `Markdown`
   - Days: For recommendations, specify how many days of data to include (1-365, default: 30)
+
+**Global Watchlist Features**: The `/global` command provides collaborative media tracking:
+- `/global view [type]` - View the global community watchlist
+  - Optional type filter: `anime`, `tv_show`, `movie`, `game`, `youtube`, `music`, `other`, or `all`
+  - Items are sorted by net votes (upvotes - downvotes)
+  - Shows item ID, type, title, votes, description, URL, and who added it
+- `/global add <type> <title> [url] [description]` - Add media to the global watchlist
+  - Automatically upvotes the item you add
+  - Duplicate titles of the same type update the existing entry
+- `/global vote <id> <vote>` - Vote on global watchlist items
+  - Vote options: `upvote`, `downvote`, or `remove` (to remove your vote)
+  - Items with more net votes appear higher in the list
+- `/global search <query>` - Search the global watchlist by title or description
 
 ### Legacy DM Support
 
