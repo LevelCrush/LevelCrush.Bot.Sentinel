@@ -494,11 +494,9 @@ impl Database {
         .await?;
 
         // Initialize checkpoint if not exists
-        sqlx::query(
-            "INSERT IGNORE INTO media_scan_checkpoint (id) VALUES (1)"
-        )
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("INSERT IGNORE INTO media_scan_checkpoint (id) VALUES (1)")
+            .execute(&self.pool)
+            .await?;
 
         // User watchlist table
         sqlx::query(
@@ -804,6 +802,16 @@ impl Database {
         .await?;
 
         Ok(())
+    }
+
+    pub async fn get_all_settings(&self) -> Result<Vec<(String, String)>> {
+        let settings: Vec<(String, String)> = sqlx::query_as(
+            "SELECT setting_key, setting_value FROM system_settings"
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(settings)
     }
 
     pub async fn get_old_cached_media(&self, days: i64) -> Result<Vec<String>> {
@@ -1355,7 +1363,7 @@ impl Database {
         )
         .fetch_one(&self.pool)
         .await?;
-        
+
         Ok((row.0 as u64, row.1))
     }
 
@@ -1384,7 +1392,11 @@ impl Database {
         Ok(())
     }
 
-    pub async fn get_unscanned_messages(&self, last_id: u64, limit: u32) -> Result<Vec<(u64, u64, u64, u64, String, DateTime<Utc>)>> {
+    pub async fn get_unscanned_messages(
+        &self,
+        last_id: u64,
+        limit: u32,
+    ) -> Result<Vec<(u64, u64, u64, u64, String, DateTime<Utc>)>> {
         let messages: Vec<(i64, i64, i64, i64, String, DateTime<Utc>)> = sqlx::query_as(
             r#"
             SELECT ml.message_id, ml.user_id, ml.channel_id, 
@@ -1398,16 +1410,28 @@ impl Database {
                 AND ml.content != ''
             ORDER BY ml.message_id ASC
             LIMIT ?
-            "#
+            "#,
         )
         .bind(last_id as i64)
         .bind(limit)
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(messages.into_iter().map(|(msg_id, user_id, channel_id, guild_id, content, timestamp)| {
-            (msg_id as u64, user_id as u64, channel_id as u64, guild_id as u64, content, timestamp)
-        }).collect())
+        Ok(messages
+            .into_iter()
+            .map(
+                |(msg_id, user_id, channel_id, guild_id, content, timestamp)| {
+                    (
+                        msg_id as u64,
+                        user_id as u64,
+                        channel_id as u64,
+                        guild_id as u64,
+                        content,
+                        timestamp,
+                    )
+                },
+            )
+            .collect())
     }
 
     // Watchlist methods
@@ -1450,7 +1474,7 @@ impl Database {
         title: &str,
     ) -> Result<bool> {
         let result = sqlx::query(
-            "DELETE FROM user_watchlist WHERE user_id = ? AND media_type = ? AND title = ?"
+            "DELETE FROM user_watchlist WHERE user_id = ? AND media_type = ? AND title = ?",
         )
         .bind(user_id as i64)
         .bind(media_type)
@@ -1513,7 +1537,7 @@ impl Database {
         days: i32,
     ) -> Result<Vec<(String, String, f32, i64, Option<String>)>> {
         let cutoff = chrono::Utc::now() - chrono::Duration::days(days as i64);
-        
+
         let items: Vec<(String, String, f32, i64, Option<String>)> = sqlx::query_as(
             r#"
             SELECT 
@@ -1544,7 +1568,7 @@ impl Database {
         limit: u32,
     ) -> Result<Vec<(String, String, f32, i64)>> {
         let search_pattern = format!("%{}%", query);
-        
+
         let items: Vec<(String, String, f32, i64)> = sqlx::query_as(
             r#"
             SELECT 
@@ -1565,6 +1589,74 @@ impl Database {
         .await?;
 
         Ok(items)
+    }
+
+    pub async fn get_user_watchlist_full(
+        &self,
+        user_id: u64,
+    ) -> Result<Vec<(String, String, Option<String>, i32, String, Option<String>)>> {
+        let items: Vec<(String, String, Option<String>, i32, String, Option<String>)> = sqlx::query_as(
+            r#"
+            SELECT media_type, title, url, priority, status, notes
+            FROM user_watchlist
+            WHERE user_id = ?
+            ORDER BY priority DESC, updated_at DESC
+            "#,
+        )
+        .bind(user_id as i64)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(items)
+    }
+
+    pub async fn get_user_recommendations(
+        &self,
+        days: i32,
+    ) -> Result<Vec<(String, String, Option<String>, f32, i64, Vec<String>)>> {
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(days as i64);
+
+        let items: Vec<(String, String, f32, i64, Option<String>)> = sqlx::query_as(
+            r#"
+            SELECT 
+                mr.media_type,
+                mr.title,
+                AVG(mr.confidence_score) as avg_confidence,
+                COUNT(*) as mention_count,
+                MAX(mr.url) as sample_url
+            FROM media_recommendations mr
+            WHERE mr.message_timestamp > ?
+            GROUP BY mr.media_type, mr.title
+            ORDER BY COUNT(*) DESC, AVG(mr.confidence_score) DESC
+            "#,
+        )
+        .bind(cutoff)
+        .fetch_all(&self.pool)
+        .await?;
+
+        // Get usernames for each recommendation
+        let mut results = Vec::new();
+        for (media_type, title, confidence, count, url) in items {
+            let users: Vec<(String,)> = sqlx::query_as(
+                r#"
+                SELECT DISTINCT u.username
+                FROM media_recommendations mr
+                JOIN users u ON mr.user_id = u.discord_user_id
+                WHERE mr.media_type = ? AND mr.title = ? AND mr.message_timestamp > ?
+                LIMIT 10
+                "#,
+            )
+            .bind(&media_type)
+            .bind(&title)
+            .bind(cutoff)
+            .fetch_all(&self.pool)
+            .await?;
+
+            let usernames: Vec<String> = users.into_iter().map(|u| u.0).collect();
+            results.push((media_type, title, url, confidence, count, usernames));
+        }
+
+        Ok(results)
     }
 
     pub async fn cleanup_old_logs(&self, days: i64) -> Result<(u64, u64, u64, u64, u64)> {

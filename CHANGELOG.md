@@ -5,17 +5,26 @@ All notable changes to Sentinel Discord Bot will be documented in this file.
 ## [Unreleased] - 2025-06-11
 
 ### Added
+- **Media Recommendations Export** - Export your watchlist and recommendations in multiple formats
+  - `/watchlist export` - Export your personal watchlist or community recommendations
+  - Choose between CSV, JSON, or Markdown formats
+  - Watchlist exports include: type, title, URL, priority, status, and notes
+  - Recommendations export includes: type, title, URL, confidence score, mention count, and who recommended it
+  - Customizable time period for recommendations (1-365 days)
+  - Files are generated with timestamps and sent as Discord attachments
+  - Ephemeral responses ensure privacy
+
 - **Super User Meme Management** - DM media attachments to organize into folders
   - Super users can DM images, videos, or GIFs to the bot
   - Supports multiple attachments in a single message
-  - Bot responds with a multi-select poll to choose storage folders
-  - Poll closes immediately upon voting for instant feedback
+  - Bot responds with interactive buttons for folder selection
+  - Instant processing when a folder is selected
+  - Real-time progress updates during file processing
   - Automatically lists all subfolders in the `memes/` directory
-  - Option to create new folders on the fly
-  - Files are saved with unique UUIDs to prevent conflicts
-  - Supports multiple folder selection for cross-categorization
+  - Files are saved with unique UUIDs
+  - Zone.Identifier files are automatically filtered out
   - Progress feedback during download and save operations
-  - Files can be saved to multiple folders simultaneously
+  - Discord's button interface provides better UX than polls
 
 - **Personal Media Watchlist** - Track and manage your entertainment backlog
   - `/watchlist view` - See your personal watchlist or top community recommendations

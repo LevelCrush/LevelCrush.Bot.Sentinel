@@ -3,6 +3,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
+use serde_json;
 use serenity::all::{
     ChannelType, Colour, Command, Context, CreateAttachment, CreateEmbed,
     CreateInteractionResponse, CreateInteractionResponseMessage, EditMember, EventHandler,
@@ -888,9 +889,13 @@ impl Handler {
         }
     }
 
-    async fn handle_watchlist_slash(&self, ctx: &Context, command: &serenity::all::CommandInteraction) {
+    async fn handle_watchlist_slash(
+        &self,
+        ctx: &Context,
+        command: &serenity::all::CommandInteraction,
+    ) {
         let user_id = command.user.id.get();
-        
+
         // Get the subcommand
         let subcommand_opt = command.data.options.first();
         if subcommand_opt.is_none() {
@@ -902,13 +907,15 @@ impl Handler {
             command.create_response(&ctx.http, response).await.ok();
             return;
         }
-        
+
         let subcommand = &subcommand_opt.unwrap().name;
         let subcommand_value = &subcommand_opt.unwrap().value;
-        
+
         match subcommand.as_str() {
             "view" => {
-                let view_type = if let serenity::all::CommandDataOptionValue::SubCommand(opts) = subcommand_value {
+                let view_type = if let serenity::all::CommandDataOptionValue::SubCommand(opts) =
+                    subcommand_value
+                {
                     opts.iter()
                         .find(|o| o.name == "type")
                         .and_then(|o| o.value.as_str())
@@ -916,7 +923,7 @@ impl Handler {
                 } else {
                     "mine"
                 };
-                
+
                 if view_type == "mine" {
                     // Show user's watchlist
                     match self.db.get_user_watchlist(user_id, 10).await {
@@ -924,18 +931,20 @@ impl Handler {
                             let mut embed = CreateEmbed::new()
                                 .title("Your Watchlist")
                                 .colour(Colour::BLUE);
-                            
+
                             for (media_type, title, url, priority, status) in items {
                                 let field_value = format!(
                                     "Type: {} | Priority: {} | Status: {}{}",
                                     media_type,
                                     priority,
                                     status,
-                                    url.as_ref().map(|u| format!("\n[Link]({})", u)).unwrap_or_default()
+                                    url.as_ref()
+                                        .map(|u| format!("\n[Link]({})", u))
+                                        .unwrap_or_default()
                                 );
                                 embed = embed.field(title, field_value, false);
                             }
-                            
+
                             let response = CreateInteractionResponse::Message(
                                 CreateInteractionResponseMessage::new()
                                     .embed(embed)
@@ -969,7 +978,7 @@ impl Handler {
                                 .title("🔥 Top Media Recommendations (Past Week)")
                                 .description("Based on what everyone's talking about!")
                                 .colour(Colour::GOLD);
-                            
+
                             for (media_type, title, _avg_confidence, mentions, url) in items {
                                 let emoji = match media_type.as_str() {
                                     "anime" => "🎌",
@@ -980,20 +989,21 @@ impl Handler {
                                     "music" => "🎵",
                                     _ => "📋",
                                 };
-                                
+
                                 let field_value = format!(
                                     "{} {} | Mentioned {} times{}",
                                     emoji,
                                     media_type,
                                     mentions,
-                                    url.as_ref().map(|u| format!("\n[Link]({})", u)).unwrap_or_default()
+                                    url.as_ref()
+                                        .map(|u| format!("\n[Link]({})", u))
+                                        .unwrap_or_default()
                                 );
                                 embed = embed.field(title, field_value, false);
                             }
-                            
+
                             let response = CreateInteractionResponse::Message(
-                                CreateInteractionResponseMessage::new()
-                                    .embed(embed),
+                                CreateInteractionResponseMessage::new().embed(embed),
                             );
                             command.create_response(&ctx.http, response).await.ok();
                         }
@@ -1020,131 +1030,199 @@ impl Handler {
             "add" => {
                 if let Some(opt) = command.data.options.first() {
                     if let serenity::all::CommandDataOptionValue::SubCommand(opts) = &opt.value {
-                        let media_type = opts.iter().find(|o| o.name == "type")
-                            .and_then(|o| o.value.as_str()).unwrap_or("other");
-                        let title = opts.iter().find(|o| o.name == "title")
-                            .and_then(|o| o.value.as_str()).unwrap_or("");
-                        let url = opts.iter().find(|o| o.name == "url")
+                        let media_type = opts
+                            .iter()
+                            .find(|o| o.name == "type")
+                            .and_then(|o| o.value.as_str())
+                            .unwrap_or("other");
+                        let title = opts
+                            .iter()
+                            .find(|o| o.name == "title")
+                            .and_then(|o| o.value.as_str())
+                            .unwrap_or("");
+                        let url = opts
+                            .iter()
+                            .find(|o| o.name == "url")
                             .and_then(|o| o.value.as_str());
-                        let priority = opts.iter().find(|o| o.name == "priority")
+                        let priority = opts
+                            .iter()
+                            .find(|o| o.name == "priority")
                             .and_then(|o| o.value.as_i64())
                             .map(|p| p as i32);
-                
-                match self.db.add_to_watchlist(user_id, media_type, title, url, priority, None).await {
-                    Ok(_) => {
-                        let response = CreateInteractionResponse::Message(
-                            CreateInteractionResponseMessage::new()
-                                .content(format!("✅ Added **{}** to your {} watchlist!", title, media_type))
-                                .ephemeral(true),
-                        );
-                        command.create_response(&ctx.http, response).await.ok();
-                    }
-                    Err(e) => {
-                        error!("Failed to add to watchlist: {}", e);
-                        let response = CreateInteractionResponse::Message(
-                            CreateInteractionResponseMessage::new()
-                                .content("Failed to add item to watchlist.")
-                                .ephemeral(true),
-                        );
-                        command.create_response(&ctx.http, response).await.ok();
-                    }
-                }
+
+                        match self
+                            .db
+                            .add_to_watchlist(user_id, media_type, title, url, priority, None)
+                            .await
+                        {
+                            Ok(_) => {
+                                let response = CreateInteractionResponse::Message(
+                                    CreateInteractionResponseMessage::new()
+                                        .content(format!(
+                                            "✅ Added **{}** to your {} watchlist!",
+                                            title, media_type
+                                        ))
+                                        .ephemeral(true),
+                                );
+                                command.create_response(&ctx.http, response).await.ok();
+                            }
+                            Err(e) => {
+                                error!("Failed to add to watchlist: {}", e);
+                                let response = CreateInteractionResponse::Message(
+                                    CreateInteractionResponseMessage::new()
+                                        .content("Failed to add item to watchlist.")
+                                        .ephemeral(true),
+                                );
+                                command.create_response(&ctx.http, response).await.ok();
+                            }
+                        }
                     }
                 }
             }
             "remove" => {
                 if let serenity::all::CommandDataOptionValue::SubCommand(opts) = subcommand_value {
-                    let media_type = opts.iter().find(|o| o.name == "type")
-                        .and_then(|o| o.value.as_str()).unwrap_or("other");
-                    let title = opts.iter().find(|o| o.name == "title")
-                        .and_then(|o| o.value.as_str()).unwrap_or("");
-                
-                match self.db.remove_from_watchlist(user_id, media_type, title).await {
-                    Ok(true) => {
-                        let response = CreateInteractionResponse::Message(
-                            CreateInteractionResponseMessage::new()
-                                .content(format!("✅ Removed **{}** from your watchlist!", title))
-                                .ephemeral(true),
-                        );
-                        command.create_response(&ctx.http, response).await.ok();
+                    let media_type = opts
+                        .iter()
+                        .find(|o| o.name == "type")
+                        .and_then(|o| o.value.as_str())
+                        .unwrap_or("other");
+                    let title = opts
+                        .iter()
+                        .find(|o| o.name == "title")
+                        .and_then(|o| o.value.as_str())
+                        .unwrap_or("");
+
+                    match self
+                        .db
+                        .remove_from_watchlist(user_id, media_type, title)
+                        .await
+                    {
+                        Ok(true) => {
+                            let response = CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content(format!(
+                                        "✅ Removed **{}** from your watchlist!",
+                                        title
+                                    ))
+                                    .ephemeral(true),
+                            );
+                            command.create_response(&ctx.http, response).await.ok();
+                        }
+                        Ok(false) => {
+                            let response = CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content("Item not found in your watchlist.")
+                                    .ephemeral(true),
+                            );
+                            command.create_response(&ctx.http, response).await.ok();
+                        }
+                        Err(e) => {
+                            error!("Failed to remove from watchlist: {}", e);
+                            let response = CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content("Failed to remove item from watchlist.")
+                                    .ephemeral(true),
+                            );
+                            command.create_response(&ctx.http, response).await.ok();
+                        }
                     }
-                    Ok(false) => {
-                        let response = CreateInteractionResponse::Message(
-                            CreateInteractionResponseMessage::new()
-                                .content("Item not found in your watchlist.")
-                                .ephemeral(true),
-                        );
-                        command.create_response(&ctx.http, response).await.ok();
-                    }
-                    Err(e) => {
-                        error!("Failed to remove from watchlist: {}", e);
-                        let response = CreateInteractionResponse::Message(
-                            CreateInteractionResponseMessage::new()
-                                .content("Failed to remove item from watchlist.")
-                                .ephemeral(true),
-                        );
-                        command.create_response(&ctx.http, response).await.ok();
-                    }
-                }
                 }
             }
             "priority" => {
                 if let serenity::all::CommandDataOptionValue::SubCommand(opts) = subcommand_value {
-                    let media_type = opts.iter().find(|o| o.name == "type")
-                        .and_then(|o| o.value.as_str()).unwrap_or("other");
-                    let title = opts.iter().find(|o| o.name == "title")
-                        .and_then(|o| o.value.as_str()).unwrap_or("");
-                    let new_priority = opts.iter().find(|o| o.name == "new_priority")
+                    let media_type = opts
+                        .iter()
+                        .find(|o| o.name == "type")
+                        .and_then(|o| o.value.as_str())
+                        .unwrap_or("other");
+                    let title = opts
+                        .iter()
+                        .find(|o| o.name == "title")
+                        .and_then(|o| o.value.as_str())
+                        .unwrap_or("");
+                    let new_priority = opts
+                        .iter()
+                        .find(|o| o.name == "new_priority")
                         .and_then(|o| o.value.as_i64())
-                        .map(|p| p as i32).unwrap_or(50);
-                
-                match self.db.update_watchlist_priority(user_id, media_type, title, new_priority).await {
-                    Ok(true) => {
-                        let response = CreateInteractionResponse::Message(
-                            CreateInteractionResponseMessage::new()
-                                .content(format!("✅ Updated priority for **{}** to {}!", title, new_priority))
-                                .ephemeral(true),
-                        );
-                        command.create_response(&ctx.http, response).await.ok();
+                        .map(|p| p as i32)
+                        .unwrap_or(50);
+
+                    match self
+                        .db
+                        .update_watchlist_priority(user_id, media_type, title, new_priority)
+                        .await
+                    {
+                        Ok(true) => {
+                            let response = CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content(format!(
+                                        "✅ Updated priority for **{}** to {}!",
+                                        title, new_priority
+                                    ))
+                                    .ephemeral(true),
+                            );
+                            command.create_response(&ctx.http, response).await.ok();
+                        }
+                        Ok(false) => {
+                            let response = CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content("Item not found in your watchlist.")
+                                    .ephemeral(true),
+                            );
+                            command.create_response(&ctx.http, response).await.ok();
+                        }
+                        Err(e) => {
+                            error!("Failed to update priority: {}", e);
+                            let response = CreateInteractionResponse::Message(
+                                CreateInteractionResponseMessage::new()
+                                    .content("Failed to update priority.")
+                                    .ephemeral(true),
+                            );
+                            command.create_response(&ctx.http, response).await.ok();
+                        }
                     }
-                    Ok(false) => {
-                        let response = CreateInteractionResponse::Message(
-                            CreateInteractionResponseMessage::new()
-                                .content("Item not found in your watchlist.")
-                                .ephemeral(true),
-                        );
-                        command.create_response(&ctx.http, response).await.ok();
-                    }
-                    Err(e) => {
-                        error!("Failed to update priority: {}", e);
-                        let response = CreateInteractionResponse::Message(
-                            CreateInteractionResponseMessage::new()
-                                .content("Failed to update priority.")
-                                .ephemeral(true),
-                        );
-                        command.create_response(&ctx.http, response).await.ok();
-                    }
-                }
                 }
             }
             "scan" => {
                 // Get the channel ID where the command was used
                 let channel_id = command.channel_id;
-                
+
                 // Send initial ephemeral message
                 let response = CreateInteractionResponse::Message(
                     CreateInteractionResponseMessage::new()
                         .content("🔍 Starting channel scan for media recommendations...")
                         .ephemeral(true),
                 );
-                
+
                 if let Err(e) = command.create_response(&ctx.http, response).await {
                     error!("Failed to send initial scan response: {}", e);
                     return;
                 }
-                
+
                 // Perform the scan
                 self.scan_channel_for_media(ctx, command, channel_id).await;
+            }
+            "export" => {
+                if let serenity::all::CommandDataOptionValue::SubCommand(opts) = subcommand_value {
+                    let data_type = opts
+                        .iter()
+                        .find(|o| o.name == "data")
+                        .and_then(|o| o.value.as_str())
+                        .unwrap_or("watchlist");
+                    let format = opts
+                        .iter()
+                        .find(|o| o.name == "format")
+                        .and_then(|o| o.value.as_str())
+                        .unwrap_or("csv");
+                    let days = opts
+                        .iter()
+                        .find(|o| o.name == "days")
+                        .and_then(|o| o.value.as_i64())
+                        .map(|d| d as i32)
+                        .unwrap_or(30);
+
+                    self.handle_watchlist_export(ctx, command, data_type, format, days).await;
+                }
             }
             _ => {
                 let response = CreateInteractionResponse::Message(
@@ -1155,53 +1233,80 @@ impl Handler {
                 command.create_response(&ctx.http, response).await.ok();
             }
         }
-        
+
         // Log the command usage
-        self.db.log_bot_response(
-            user_id,
-            Some("/watchlist"),
-            "slash_command",
-            &format!("Used watchlist {}", subcommand),
-            true,
-        ).await.ok();
+        self.db
+            .log_bot_response(
+                user_id,
+                Some("/watchlist"),
+                "slash_command",
+                &format!("Used watchlist {}", subcommand),
+                true,
+            )
+            .await
+            .ok();
     }
 
-    async fn detect_and_log_media(&self, message_id: u64, user_id: u64, channel_id: u64, guild_id: u64, content: &str, timestamp: chrono::DateTime<chrono::Utc>) {
+    async fn detect_and_log_media(
+        &self,
+        message_id: u64,
+        user_id: u64,
+        channel_id: u64,
+        guild_id: u64,
+        content: &str,
+        timestamp: chrono::DateTime<chrono::Utc>,
+    ) {
         use crate::media_detector::MediaDetector;
-        
+
         // Create media detector
         let detector = MediaDetector::new();
-        
+
         // Detect media in the content
         let recommendations = detector.detect_media(content);
-        
+
         // Log each recommendation to the database
         for rec in recommendations {
-            if let Err(e) = self.db.log_media_recommendation(
-                message_id,
-                user_id,
-                channel_id,
-                guild_id,
-                rec.media_type,
-                &rec.title,
-                rec.url.as_deref(),
-                rec.confidence,
-                timestamp,
-            ).await {
+            if let Err(e) = self
+                .db
+                .log_media_recommendation(
+                    message_id,
+                    user_id,
+                    channel_id,
+                    guild_id,
+                    rec.media_type,
+                    &rec.title,
+                    rec.url.as_deref(),
+                    rec.confidence,
+                    timestamp,
+                )
+                .await
+            {
                 error!("Failed to log media recommendation: {}", e);
             } else {
-                info!("Detected {} recommendation '{}' with {:.0}% confidence", 
-                    rec.media_type, rec.title, rec.confidence * 100.0);
+                info!(
+                    "Detected {} recommendation '{}' with {:.0}% confidence",
+                    rec.media_type,
+                    rec.title,
+                    rec.confidence * 100.0
+                );
             }
         }
     }
 
-    async fn scan_channel_for_media(&self, ctx: &Context, command: &serenity::all::CommandInteraction, channel_id: serenity::all::ChannelId) {
+    async fn scan_channel_for_media(
+        &self,
+        ctx: &Context,
+        command: &serenity::all::CommandInteraction,
+        channel_id: serenity::all::ChannelId,
+    ) {
         use crate::media_detector::{MediaDetector, MediaRecommendation};
         use std::collections::HashMap;
-        
+
         // Fetch the last 100 messages from the channel
-        let messages = match channel_id.messages(&ctx.http, serenity::all::GetMessages::new().limit(100)).await {
+        let messages = match channel_id
+            .messages(&ctx.http, serenity::all::GetMessages::new().limit(100))
+            .await
+        {
             Ok(msgs) => msgs,
             Err(e) => {
                 error!("Failed to fetch messages: {}", e);
@@ -1213,33 +1318,37 @@ impl Handler {
                 return;
             }
         };
-        
+
         // Send progress update
         let followup = serenity::all::CreateInteractionResponseFollowup::new()
-            .content(format!("📊 Scanning {} messages for media recommendations...", messages.len()))
+            .content(format!(
+                "📊 Scanning {} messages for media recommendations...",
+                messages.len()
+            ))
             .ephemeral(true);
         command.create_followup(&ctx.http, followup).await.ok();
-        
+
         // Create media detector
         let detector = MediaDetector::new();
-        let mut all_recommendations: HashMap<String, (MediaRecommendation, i32, Vec<String>)> = HashMap::new();
+        let mut all_recommendations: HashMap<String, (MediaRecommendation, i32, Vec<String>)> =
+            HashMap::new();
         let mut scanned_count = 0;
-        
+
         // Scan messages
         for msg in messages.iter() {
             // Skip bot messages
             if msg.author.bot {
                 continue;
             }
-            
+
             scanned_count += 1;
-            
+
             // Detect media in this message
             let recommendations = detector.detect_media(&msg.content);
-            
+
             for rec in recommendations {
                 let key = format!("{}:{}", rec.media_type, rec.title);
-                
+
                 all_recommendations
                     .entry(key)
                     .and_modify(|(existing, count, users)| {
@@ -1253,27 +1362,48 @@ impl Handler {
                             existing.url = rec.url.clone();
                         }
                         // Track who mentioned it
-                        let user_tag = format!("{}#{}", msg.author.name, msg.author.discriminator.map(|d| d.to_string()).unwrap_or_else(|| "0000".to_string()));
+                        let user_tag = format!(
+                            "{}#{}",
+                            msg.author.name,
+                            msg.author
+                                .discriminator
+                                .map(|d| d.to_string())
+                                .unwrap_or_else(|| "0000".to_string())
+                        );
                         if !users.contains(&user_tag) {
                             users.push(user_tag);
                         }
                     })
-                    .or_insert((rec, 1, vec![format!("{}#{}", msg.author.name, msg.author.discriminator.map(|d| d.to_string()).unwrap_or_else(|| "0000".to_string()))]));
+                    .or_insert((
+                        rec,
+                        1,
+                        vec![format!(
+                            "{}#{}",
+                            msg.author.name,
+                            msg.author
+                                .discriminator
+                                .map(|d| d.to_string())
+                                .unwrap_or_else(|| "0000".to_string())
+                        )],
+                    ));
             }
-            
+
             // Send progress update every 25 messages
             if scanned_count % 25 == 0 {
                 let progress_followup = serenity::all::CreateInteractionResponseFollowup::new()
                     .content(format!("⏳ Scanned {} messages...", scanned_count))
                     .ephemeral(true);
-                command.create_followup(&ctx.http, progress_followup).await.ok();
+                command
+                    .create_followup(&ctx.http, progress_followup)
+                    .await
+                    .ok();
             }
         }
-        
+
         // Sort recommendations by mention count
         let mut sorted_recommendations: Vec<_> = all_recommendations.into_iter().collect();
-        sorted_recommendations.sort_by(|a, b| b.1.1.cmp(&a.1.1));
-        
+        sorted_recommendations.sort_by(|a, b| b.1 .1.cmp(&a.1 .1));
+
         // Create the final embed
         if sorted_recommendations.is_empty() {
             let followup = serenity::all::CreateInteractionResponseFollowup::new()
@@ -1283,12 +1413,20 @@ impl Handler {
         } else {
             let mut embed = CreateEmbed::new()
                 .title("📺 Media Recommendations from Channel Scan")
-                .description(format!("Found {} unique media items from {} messages", sorted_recommendations.len(), scanned_count))
+                .description(format!(
+                    "Found {} unique media items from {} messages",
+                    sorted_recommendations.len(),
+                    scanned_count
+                ))
                 .colour(Colour::PURPLE)
-                .footer(serenity::all::CreateEmbedFooter::new("Use /watchlist add to save items to your personal list"));
-            
+                .footer(serenity::all::CreateEmbedFooter::new(
+                    "Use /watchlist add to save items to your personal list",
+                ));
+
             // Add top 10 recommendations
-            for (i, (_key, (rec, count, users))) in sorted_recommendations.iter().take(10).enumerate() {
+            for (i, (_key, (rec, count, users))) in
+                sorted_recommendations.iter().take(10).enumerate()
+            {
                 let emoji = match rec.media_type {
                     "anime" => "🎌",
                     "tv_show" => "📺",
@@ -1298,13 +1436,13 @@ impl Handler {
                     "music" => "🎵",
                     _ => "📋",
                 };
-                
+
                 let users_str = if users.len() > 3 {
                     format!("{} and {} others", users[..3].join(", "), users.len() - 3)
                 } else {
                     users.join(", ")
                 };
-                
+
                 let field_value = format!(
                     "{} **{}**\nMentioned {} times by: {}\nConfidence: {:.0}%{}",
                     emoji,
@@ -1312,171 +1450,494 @@ impl Handler {
                     count,
                     users_str,
                     rec.confidence * 100.0,
-                    rec.url.as_ref().map(|u| format!("\n[Link]({})", u)).unwrap_or_default()
+                    rec.url
+                        .as_ref()
+                        .map(|u| format!("\n[Link]({})", u))
+                        .unwrap_or_default()
                 );
-                
+
                 embed = embed.field(format!("{}. {}", i + 1, rec.title), field_value, false);
             }
-            
+
             // Send the final visible embed
-            let followup = serenity::all::CreateInteractionResponseFollowup::new()
-                .embed(embed);
+            let followup = serenity::all::CreateInteractionResponseFollowup::new().embed(embed);
             command.create_followup(&ctx.http, followup).await.ok();
         }
     }
 
+    async fn handle_watchlist_export(
+        &self,
+        ctx: &Context,
+        command: &serenity::all::CommandInteraction,
+        data_type: &str,
+        format: &str,
+        days: i32,
+    ) {
+        let user_id = command.user.id.get();
+
+        // Send initial response
+        let response = CreateInteractionResponse::Message(
+            CreateInteractionResponseMessage::new()
+                .content("📥 Generating export...")
+                .ephemeral(true),
+        );
+
+        if let Err(e) = command.create_response(&ctx.http, response).await {
+            error!("Failed to send initial export response: {}", e);
+            return;
+        }
+
+        // Generate the export content
+        let export_content = match data_type {
+            "watchlist" => {
+                match self.db.get_user_watchlist_full(user_id).await {
+                    Ok(items) => self.generate_watchlist_export(items, format),
+                    Err(e) => {
+                        error!("Failed to get watchlist for export: {}", e);
+                        let followup = serenity::all::CreateInteractionResponseFollowup::new()
+                            .content("❌ Failed to retrieve watchlist data.")
+                            .ephemeral(true);
+                        command.create_followup(&ctx.http, followup).await.ok();
+                        return;
+                    }
+                }
+            }
+            "recommendations" => {
+                match self.db.get_user_recommendations(days).await {
+                    Ok(items) => self.generate_recommendations_export(items, format, days),
+                    Err(e) => {
+                        error!("Failed to get recommendations for export: {}", e);
+                        let followup = serenity::all::CreateInteractionResponseFollowup::new()
+                            .content("❌ Failed to retrieve recommendations data.")
+                            .ephemeral(true);
+                        command.create_followup(&ctx.http, followup).await.ok();
+                        return;
+                    }
+                }
+            }
+            _ => {
+                let followup = serenity::all::CreateInteractionResponseFollowup::new()
+                    .content("❌ Invalid export type.")
+                    .ephemeral(true);
+                command.create_followup(&ctx.http, followup).await.ok();
+                return;
+            }
+        };
+
+        // Create a file attachment
+        let filename = format!(
+            "{}_{}.{}",
+            data_type,
+            chrono::Utc::now().format("%Y%m%d_%H%M%S"),
+            format
+        );
+
+        let attachment = serenity::all::CreateAttachment::bytes(
+            export_content.as_bytes(),
+            filename.clone(),
+        );
+
+        // Send the export as a file attachment
+        let description = if data_type == "watchlist" { 
+            "watchlist".to_string() 
+        } else { 
+            format!("recommendations from the last {} days", days) 
+        };
+        
+        let followup = serenity::all::CreateInteractionResponseFollowup::new()
+            .content(format!(
+                "✅ Export complete! Here's your {} in {} format:",
+                description,
+                format.to_uppercase()
+            ))
+            .add_file(attachment)
+            .ephemeral(true);
+
+        if let Err(e) = command.create_followup(&ctx.http, followup).await {
+            error!("Failed to send export file: {}", e);
+            let error_followup = serenity::all::CreateInteractionResponseFollowup::new()
+                .content("❌ Failed to send export file. The data might be too large.")
+                .ephemeral(true);
+            command.create_followup(&ctx.http, error_followup).await.ok();
+        }
+    }
+
+    fn generate_watchlist_export(
+        &self,
+        items: Vec<(String, String, Option<String>, i32, String, Option<String>)>,
+        format: &str,
+    ) -> String {
+        match format {
+            "csv" => {
+                let mut csv = String::from("Type,Title,URL,Priority,Status,Notes\n");
+                for (media_type, title, url, priority, status, notes) in items {
+                    csv.push_str(&format!(
+                        "{},{},{},{},{},{}\n",
+                        self.escape_csv(&media_type),
+                        self.escape_csv(&title),
+                        self.escape_csv(&url.unwrap_or_default()),
+                        priority,
+                        self.escape_csv(&status),
+                        self.escape_csv(&notes.unwrap_or_default())
+                    ));
+                }
+                csv
+            }
+            "json" => {
+                let json_items: Vec<serde_json::Value> = items
+                    .into_iter()
+                    .map(|(media_type, title, url, priority, status, notes)| {
+                        serde_json::json!({
+                            "type": media_type,
+                            "title": title,
+                            "url": url,
+                            "priority": priority,
+                            "status": status,
+                            "notes": notes
+                        })
+                    })
+                    .collect();
+                
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "watchlist": json_items,
+                    "exported_at": chrono::Utc::now().to_rfc3339()
+                })).unwrap_or_else(|_| "[]".to_string())
+            }
+            "markdown" => {
+                let mut md = String::from("# My Media Watchlist\n\n");
+                md.push_str(&format!("*Exported on {}*\n\n", chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")));
+                
+                // Group by media type
+                let mut grouped: std::collections::HashMap<String, Vec<_>> = std::collections::HashMap::new();
+                for item in items {
+                    grouped.entry(item.0.clone()).or_insert_with(Vec::new).push(item);
+                }
+                
+                for (media_type, items) in grouped {
+                    let emoji = match media_type.as_str() {
+                        "anime" => "🎌",
+                        "tv_show" => "📺",
+                        "movie" => "🎬",
+                        "game" => "🎮",
+                        "youtube" => "📹",
+                        "music" => "🎵",
+                        _ => "📋",
+                    };
+                    
+                    md.push_str(&format!("\n## {} {}\n\n", emoji, self.capitalize(&media_type.replace('_', " "))));
+                    
+                    for (_, title, url, priority, status, notes) in items {
+                        md.push_str(&format!("### {}\n", title));
+                        md.push_str(&format!("- **Priority**: {}/100\n", priority));
+                        md.push_str(&format!("- **Status**: {}\n", self.capitalize(&status.replace('_', " "))));
+                        if let Some(url) = url {
+                            md.push_str(&format!("- **Link**: [{}]({})\n", url, url));
+                        }
+                        if let Some(notes) = notes {
+                            if !notes.is_empty() {
+                                md.push_str(&format!("- **Notes**: {}\n", notes));
+                            }
+                        }
+                        md.push('\n');
+                    }
+                }
+                
+                md
+            }
+            _ => String::new()
+        }
+    }
+
+    fn generate_recommendations_export(
+        &self,
+        items: Vec<(String, String, Option<String>, f32, i64, Vec<String>)>,
+        format: &str,
+        days: i32,
+    ) -> String {
+        match format {
+            "csv" => {
+                let mut csv = String::from("Type,Title,URL,Confidence,Mentions,Recommended By\n");
+                for (media_type, title, url, confidence, mentions, users) in items {
+                    csv.push_str(&format!(
+                        "{},{},{},{:.2},{},{}\n",
+                        self.escape_csv(&media_type),
+                        self.escape_csv(&title),
+                        self.escape_csv(&url.unwrap_or_default()),
+                        confidence,
+                        mentions,
+                        self.escape_csv(&users.join("; "))
+                    ));
+                }
+                csv
+            }
+            "json" => {
+                let json_items: Vec<serde_json::Value> = items
+                    .into_iter()
+                    .map(|(media_type, title, url, confidence, mentions, users)| {
+                        serde_json::json!({
+                            "type": media_type,
+                            "title": title,
+                            "url": url,
+                            "confidence": confidence,
+                            "mentions": mentions,
+                            "recommended_by": users
+                        })
+                    })
+                    .collect();
+                
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "recommendations": json_items,
+                    "period_days": days,
+                    "exported_at": chrono::Utc::now().to_rfc3339()
+                })).unwrap_or_else(|_| "[]".to_string())
+            }
+            "markdown" => {
+                let mut md = String::from("# Media Recommendations\n\n");
+                md.push_str(&format!("*Based on the last {} days of activity*\n", days));
+                md.push_str(&format!("*Exported on {}*\n\n", chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")));
+                
+                // Group by media type
+                let mut grouped: std::collections::HashMap<String, Vec<_>> = std::collections::HashMap::new();
+                for item in items {
+                    grouped.entry(item.0.clone()).or_insert_with(Vec::new).push(item);
+                }
+                
+                for (media_type, items) in grouped {
+                    let emoji = match media_type.as_str() {
+                        "anime" => "🎌",
+                        "tv_show" => "📺",
+                        "movie" => "🎬",
+                        "game" => "🎮",
+                        "youtube" => "📹",
+                        "music" => "🎵",
+                        _ => "📋",
+                    };
+                    
+                    md.push_str(&format!("\n## {} {}\n\n", emoji, self.capitalize(&media_type.replace('_', " "))));
+                    
+                    for (_, title, url, confidence, mentions, users) in items {
+                        md.push_str(&format!("### {}\n", title));
+                        md.push_str(&format!("- **Mentioned**: {} time{}\n", mentions, if mentions == 1 { "" } else { "s" }));
+                        md.push_str(&format!("- **Confidence**: {:.0}%\n", confidence * 100.0));
+                        if let Some(url) = url {
+                            md.push_str(&format!("- **Link**: [{}]({})\n", url, url));
+                        }
+                        if !users.is_empty() {
+                            md.push_str(&format!("- **Recommended by**: {}\n", users.join(", ")));
+                        }
+                        md.push('\n');
+                    }
+                }
+                
+                md
+            }
+            _ => String::new()
+        }
+    }
+
+    fn escape_csv(&self, field: &str) -> String {
+        if field.contains(',') || field.contains('"') || field.contains('\n') {
+            format!("\"{}\"", field.replace('"', "\"\""))
+        } else {
+            field.to_string()
+        }
+    }
+
+    fn capitalize(&self, s: &str) -> String {
+        let mut chars = s.chars();
+        match chars.next() {
+            None => String::new(),
+            Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        }
+    }
+
     async fn handle_super_user_media_attachments(&self, ctx: &Context, msg: &Message) {
-        use serenity::all::{CreateMessage, CreatePoll, CreatePollAnswer};
-        
-        info!("[SUPER USER MEDIA] {} sent {} attachment(s)", msg.author.name, msg.attachments.len());
-        
+        use serenity::all::{CreateMessage, CreateActionRow, CreateButton, ButtonStyle};
+
+        info!(
+            "[SUPER USER MEDIA] {} sent {} attachment(s)",
+            msg.author.name,
+            msg.attachments.len()
+        );
+
         // Get list of meme folders
         let meme_folders = self.get_meme_folders().await;
-        
-        // Create poll for each attachment
+
+        // Process each attachment
         for attachment in &msg.attachments {
-            // Check if it's an image/video/gif
-            let is_media = attachment.content_type.as_ref()
-                .map(|ct| ct.starts_with("image/") || ct.starts_with("video/") || ct == "image/gif")
-                .unwrap_or(false);
-            
-            if !is_media {
-                let _ = msg.channel_id.say(&ctx.http, 
-                    format!("⚠️ {} is not a supported media file (images/videos/gifs only)", attachment.filename)
-                ).await;
+            // Skip Zone.Identifier files
+            if attachment.filename.ends_with(":Zone.Identifier") || attachment.filename == "Zone.Identifier" {
                 continue;
             }
-            
-            // Create poll answers from meme folders
-            let mut poll_answers = Vec::new();
+
+            // Check if it's an image/video/gif
+            let is_media = attachment
+                .content_type
+                .as_ref()
+                .map(|ct| ct.starts_with("image/") || ct.starts_with("video/") || ct == "image/gif")
+                .unwrap_or(false);
+
+            if !is_media {
+                let _ = msg
+                    .channel_id
+                    .say(
+                        &ctx.http,
+                        format!(
+                            "⚠️ {} is not a supported media file (images/videos/gifs only)",
+                            attachment.filename
+                        ),
+                    )
+                    .await;
+                continue;
+            }
+
+            // Create buttons for each folder (Discord limit is 5 buttons per row, 5 rows max = 25 buttons)
+            let mut rows = Vec::new();
+            let mut current_row = Vec::new();
+
             for (i, folder) in meme_folders.iter().enumerate() {
-                if i >= 10 { break; } // Discord limit is 10 answers
+                if i >= 25 { // Max 25 buttons total
+                    break;
+                }
+
+                let button = CreateButton::new(format!("meme_folder_{}", folder))
+                    .label(folder)
+                    .style(ButtonStyle::Primary);
                 
-                let answer = CreatePollAnswer::new()
-                    .text(folder.clone());
-                poll_answers.push(answer);
+                current_row.push(button);
+
+                // Create new row every 5 buttons
+                if current_row.len() == 5 {
+                    rows.push(CreateActionRow::Buttons(current_row.clone()));
+                    current_row.clear();
+                }
             }
-            
-            // Add option to create new folder
-            if poll_answers.len() < 10 {
-                poll_answers.push(CreatePollAnswer::new()
-                    .text("📁 Create new folder".to_string()));
+
+            // Add any remaining buttons as the last row
+            if !current_row.is_empty() {
+                rows.push(CreateActionRow::Buttons(current_row));
             }
-            
-            // Create the poll with all answers at once
-            let poll = CreatePoll::new()
-                .question(format!("Where should I save '{}'?", attachment.filename))
-                .answers(poll_answers)
-                .duration(std::time::Duration::from_secs(3600)) // 1 hour duration
-                .allow_multiselect();
-            
-            // Send poll message
-            let poll_msg = CreateMessage::new()
-                .content(format!("🎨 New meme from **{}**!\nSelect folder(s) to save to:", msg.author.name))
-                .poll(poll);
-            
-            match msg.channel_id.send_message(&ctx.http, poll_msg).await {
-                Ok(poll_message) => {
-                    info!("Created poll for attachment {} (poll message {})", attachment.filename, poll_message.id);
-                    
-                    // Store the attachment info for later processing when votes come in
-                    // We'll use the poll message ID as the key
-                    let poll_key = format!("meme_poll_{}_{}", msg.channel_id.get(), poll_message.id.get());
-                    let attachment_data = format!("{}|{}|{}", attachment.url, attachment.filename, msg.author.id.get());
-                    
-                    // Store in system settings temporarily (we'll process it when votes come in)
-                    if let Err(e) = self.db.set_setting(&poll_key, &attachment_data).await {
-                        error!("Failed to store poll attachment data: {}", e);
+
+            // Send message with buttons
+            let message_content = format!(
+                "🎨 New meme from **{}**!\n**File:** {}\n\nSelect a folder to save to:",
+                msg.author.name,
+                attachment.filename
+            );
+
+            let builder = CreateMessage::new()
+                .content(message_content)
+                .components(rows);
+
+            match msg.channel_id.send_message(&ctx.http, builder).await {
+                Ok(button_message) => {
+                    info!(
+                        "Created button message for attachment {} (message {})",
+                        attachment.filename, button_message.id
+                    );
+
+                    // Store the attachment info for later processing when button is clicked
+                    let button_key = format!(
+                        "meme_buttons_{}_{}",
+                        msg.channel_id.get(),
+                        button_message.id.get()
+                    );
+                    let attachment_data = format!(
+                        "{}|{}|{}",
+                        attachment.url,
+                        attachment.filename,
+                        msg.author.id.get()
+                    );
+
+                    // Store in system settings temporarily
+                    if let Err(e) = self.db.set_setting(&button_key, &attachment_data).await {
+                        error!("Failed to store button attachment data: {}", e);
                     }
                 }
                 Err(e) => {
-                    error!("Failed to create poll for attachment: {}", e);
-                    let _ = msg.channel_id.say(&ctx.http, "❌ Failed to create poll for this attachment").await;
+                    error!("Failed to create button message for attachment: {}", e);
+                    let _ = msg
+                        .channel_id
+                        .say(&ctx.http, "❌ Failed to create selection buttons for this attachment")
+                        .await;
                 }
             }
         }
     }
-    
-    async fn process_meme_poll_vote(&self, ctx: &Context, message: &Message, poll: &serenity::all::Poll, answer_id: usize, attachment_data: &str) {
-        use reqwest;
-        use tokio::fs;
-        use uuid::Uuid;
-        use serenity::all::EditMessage;
-        
-        // Parse attachment data (url|filename|user_id)
-        let parts: Vec<&str> = attachment_data.split('|').collect();
-        if parts.len() != 3 {
-            error!("Invalid attachment data format");
+
+    async fn handle_meme_folder_button(
+        &self,
+        ctx: &Context,
+        component: serenity::all::ComponentInteraction,
+    ) {
+        use serenity::all::{CreateInteractionResponse, CreateInteractionResponseFollowup, EditMessage};
+
+        // Send immediate acknowledgment
+        let response = CreateInteractionResponse::Acknowledge;
+        if let Err(e) = component.create_response(&ctx.http, response).await {
+            error!("Failed to acknowledge button interaction: {}", e);
             return;
         }
-        
-        let url = parts[0];
-        let original_filename = parts[1];
-        let uploader_id = parts[2].parse::<u64>().unwrap_or(0);
-        
-        // Check if we've already started processing this poll
-        let processing_key = format!("meme_processing_{}_{}", message.channel_id.get(), message.id.get());
-        if self.db.get_setting(&processing_key).await.unwrap_or(None).is_some() {
-            // Already processing, just add this vote to the list
-            return;
-        }
-        
-        // Mark as processing
-        let _ = self.db.set_setting(&processing_key, "true").await;
-        
-        // Close the poll immediately by editing the message to remove it
-        let edit_msg = EditMessage::new()
-            .content(format!("🎨 Processing meme: **{}**...", original_filename));
-        
-        if let Err(e) = message.channel_id.edit_message(&ctx.http, message.id, edit_msg).await {
-            error!("Failed to close poll: {}", e);
-        }
-        
-        // Get all votes for this poll to handle multiselect
-        let poll_id = format!("{}_{}", message.channel_id.get(), message.id.get());
-        let votes = self.db.get_poll_votes(&poll_id, uploader_id).await.unwrap_or_default();
-        
-        // Collect all selected folders
-        let mut selected_folders = Vec::new();
-        
-        // Always include the current vote
-        if let Some(answer) = poll.answers.get(answer_id) {
-            if let Some(folder_name) = &answer.poll_media.text {
-                selected_folders.push(folder_name.clone());
+
+        // Get the attachment data for this message
+        let button_key = format!(
+            "meme_buttons_{}_{}",
+            component.channel_id.get(),
+            component.message.id.get()
+        );
+
+        if let Ok(Some(attachment_data)) = self.db.get_setting(&button_key).await {
+            // Parse attachment data
+            let parts: Vec<&str> = attachment_data.split('|').collect();
+            if parts.len() != 3 {
+                error!("Invalid attachment data format");
+                return;
             }
-        }
-        
-        // Add any other votes from this user
-        for vote_id in votes {
-            if let Some(answer) = poll.answers.get(vote_id as usize) {
-                if let Some(folder_name) = &answer.poll_media.text {
-                    if !selected_folders.contains(folder_name) {
-                        selected_folders.push(folder_name.clone());
-                    }
-                }
+
+            let url = parts[0];
+            let original_filename = parts[1];
+            let _uploader_id = parts[2];
+
+            // Extract folder name from custom_id
+            let folder_name = component.data.custom_id.strip_prefix("meme_folder_").unwrap_or("");
+
+            if folder_name.is_empty() {
+                error!("Invalid folder name in button custom_id");
+                return;
             }
-        }
-        
-        // Check if any folder is "Create new folder"
-        if selected_folders.iter().any(|f| f == "📁 Create new folder") {
-            // Send a message asking for the new folder name
-            let _ = message.channel_id.say(&ctx.http, 
-                "Please reply with the name for the new folder (alphanumeric characters, dashes, and underscores only):"
+
+            // Update the message to show processing
+            let edit_msg = EditMessage::new()
+                .content(format!("🎨 Processing meme: **{}**...", original_filename))
+                .components(vec![]); // Remove buttons
+
+            if let Err(e) = component.message.channel_id.edit_message(&ctx.http, component.message.id, edit_msg).await {
+                error!("Failed to update message: {}", e);
+            }
+
+            // Download and save the meme
+            let processing_key = format!("meme_processing_{}_{}", component.channel_id.get(), component.message.id.get());
+            self.download_and_save_meme(
+                ctx,
+                &component.message,
+                url,
+                original_filename,
+                &[folder_name.to_string()],
+                &processing_key,
             ).await;
-            
-            // Store state for handling the reply
-            let state_key = format!("awaiting_folder_name_{}", message.channel_id.get());
-            let _ = self.db.set_setting(&state_key, attachment_data).await;
-            
-            // Clean up processing flag
-            let _ = self.db.delete_setting(&processing_key).await;
-            return;
+
+            // Clean up the button data
+            let _ = self.db.delete_setting(&button_key).await;
+        } else {
+            // No attachment data found
+            let followup = CreateInteractionResponseFollowup::new()
+                .content("❌ Error: Could not find attachment data for this message.")
+                .ephemeral(true);
+
+            let _ = component.create_followup(&ctx.http, followup).await;
         }
-        
-        // Download and save to all selected folders
-        self.download_and_save_meme(ctx, message, url, original_filename, &selected_folders, &processing_key).await;
     }
-    
+
     async fn download_and_save_meme(
         &self,
         ctx: &Context,
@@ -1487,10 +1948,10 @@ impl Handler {
         processing_key: &str,
     ) {
         use reqwest;
+        use serenity::all::EditMessage;
         use tokio::fs;
         use uuid::Uuid;
-        use serenity::all::EditMessage;
-        
+
         // Download the file once
         match reqwest::get(url).await {
             Ok(response) => {
@@ -1499,26 +1960,36 @@ impl Handler {
                     let extension = std::path::Path::new(original_filename)
                         .extension()
                         .and_then(|e| e.to_str())
+                        .or_else(|| {
+                            // Try to get extension from URL if not in filename
+                            if url.contains(".jpg") || url.contains(".jpeg") { Some("jpg") }
+                            else if url.contains(".png") { Some("png") }
+                            else if url.contains(".gif") { Some("gif") }
+                            else if url.contains(".webp") { Some("webp") }
+                            else if url.contains(".mp4") { Some("mp4") }
+                            else if url.contains(".webm") { Some("webm") }
+                            else { Some("png") } // Default to png
+                        })
                         .unwrap_or("png");
-                    
+
                     // Generate unique filename
                     let new_filename = format!("{}.{}", Uuid::new_v4(), extension);
-                    
+
                     let mut saved_folders = Vec::new();
                     let mut failed_folders = Vec::new();
-                    
+
                     // Save to each selected folder
                     for folder_name in folders {
                         let folder_path = format!("./memes/{}", folder_name);
                         let file_path = format!("{}/{}", folder_path, new_filename);
-                        
+
                         // Ensure folder exists
                         if let Err(e) = fs::create_dir_all(&folder_path).await {
                             error!("Failed to create folder {}: {}", folder_path, e);
                             failed_folders.push(folder_name.clone());
                             continue;
                         }
-                        
+
                         // Save the file
                         match fs::write(&file_path, &bytes).await {
                             Ok(_) => {
@@ -1531,80 +2002,85 @@ impl Handler {
                             }
                         }
                     }
-                    
+
                     // Update the message with results
                     let result_msg = if !saved_folders.is_empty() {
                         if saved_folders.len() == 1 {
-                            format!("✅ Successfully saved **{}** to folder **{}**!", original_filename, saved_folders[0])
+                            format!(
+                                "✅ Successfully saved **{}** to folder **{}**!",
+                                original_filename, saved_folders[0]
+                            )
                         } else {
-                            format!("✅ Successfully saved **{}** to {} folders: **{}**!", 
-                                original_filename, 
+                            format!(
+                                "✅ Successfully saved **{}** to {} folders: **{}**!",
+                                original_filename,
                                 saved_folders.len(),
-                                saved_folders.join("**, **"))
+                                saved_folders.join("**, **")
+                            )
                         }
                     } else {
                         format!("❌ Failed to save **{}** to any folder", original_filename)
                     };
-                    
+
                     let edit_msg = EditMessage::new().content(result_msg);
-                    let _ = message.channel_id.edit_message(&ctx.http, message.id, edit_msg).await;
-                    
+                    let _ = message
+                        .channel_id
+                        .edit_message(&ctx.http, message.id, edit_msg)
+                        .await;
+
                     // Clean up the poll data from settings
-                    let poll_key = format!("meme_poll_{}_{}", message.channel_id.get(), message.id.get());
+                    let poll_key = format!(
+                        "meme_poll_{}_{}",
+                        message.channel_id.get(),
+                        message.id.get()
+                    );
                     let _ = self.db.delete_setting(&poll_key).await;
                     let _ = self.db.delete_setting(&processing_key).await;
                 } else {
                     // Failed to get bytes
-                    let error_msg = EditMessage::new()
-                        .content(format!("❌ Failed to download **{}** - Invalid response", original_filename));
-                    
-                    let _ = message.channel_id.edit_message(&ctx.http, message.id, error_msg).await;
+                    let error_msg = EditMessage::new().content(format!(
+                        "❌ Failed to download **{}** - Invalid response",
+                        original_filename
+                    ));
+
+                    let _ = message
+                        .channel_id
+                        .edit_message(&ctx.http, message.id, error_msg)
+                        .await;
                     let _ = self.db.delete_setting(&processing_key).await;
                 }
             }
             Err(e) => {
                 error!("Failed to download attachment: {}", e);
-                
+
                 // Update the message with download error
-                let error_msg = EditMessage::new()
-                    .content(format!("❌ Failed to download **{}** - Network error", original_filename));
-                
-                let _ = message.channel_id.edit_message(&ctx.http, message.id, error_msg).await;
+                let error_msg = EditMessage::new().content(format!(
+                    "❌ Failed to download **{}** - Network error",
+                    original_filename
+                ));
+
+                let _ = message
+                    .channel_id
+                    .edit_message(&ctx.http, message.id, error_msg)
+                    .await;
                 let _ = self.db.delete_setting(&processing_key).await;
             }
         }
     }
 
-    async fn save_meme_to_folder(&self, ctx: &Context, msg: &Message, folder_name: &str, attachment_data: &str) {
-        // Parse attachment data (url|filename|user_id)
-        let parts: Vec<&str> = attachment_data.split('|').collect();
-        if parts.len() != 3 {
-            error!("Invalid attachment data format");
-            return;
-        }
-        
-        let url = parts[0];
-        let original_filename = parts[1];
-        
-        // Use a dummy processing key since this is for new folder creation
-        let processing_key = format!("meme_processing_{}_new_folder", msg.channel_id.get());
-        
-        // Download and save to the new folder
-        self.download_and_save_meme(ctx, msg, url, original_filename, &[folder_name.to_string()], &processing_key).await;
-    }
 
     async fn get_meme_folders(&self) -> Vec<String> {
         use tokio::fs;
-        
+
         let memes_dir = "./memes";
         let mut folders = Vec::new();
-        
+
         // Ensure memes directory exists
         if let Err(e) = fs::create_dir_all(memes_dir).await {
             error!("Failed to create memes directory: {}", e);
             return folders;
         }
-        
+
         // Read subdirectories
         match fs::read_dir(memes_dir).await {
             Ok(mut entries) => {
@@ -1622,10 +2098,10 @@ impl Handler {
                 error!("Failed to read memes directory: {}", e);
             }
         }
-        
+
         // Sort folders alphabetically
         folders.sort();
-        
+
         // If no folders exist, create a default one
         if folders.is_empty() {
             let default_folder = "general";
@@ -1635,7 +2111,7 @@ impl Handler {
                 folders.push(default_folder.to_string());
             }
         }
-        
+
         folders
     }
 
@@ -1728,35 +2204,14 @@ impl EventHandler for Handler {
                 error!("Failed to log DM message: {}", e);
             }
 
-            // Check if this is a reply for new folder name
-            let state_key = format!("awaiting_folder_name_{}", msg.channel_id.get());
-            if let Ok(Some(attachment_data)) = self.db.get_setting(&state_key).await {
-                // Validate folder name
-                let folder_name = msg.content.trim();
-                if folder_name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') && !folder_name.is_empty() {
-                    // Create the folder
-                    let folder_path = format!("./memes/{}", folder_name);
-                    if let Err(e) = tokio::fs::create_dir_all(&folder_path).await {
-                        let _ = msg.channel_id.say(&ctx.http, 
-                            format!("❌ Failed to create folder: {}", e)
-                        ).await;
-                    } else {
-                        // Save the meme to the new folder
-                        self.save_meme_to_folder(&ctx, &msg, folder_name, &attachment_data).await;
-                        
-                        // Clear the state
-                        let _ = self.db.set_setting(&state_key, "").await;
-                    }
-                } else {
-                    let _ = msg.channel_id.say(&ctx.http, 
-                        "❌ Invalid folder name. Please use only letters, numbers, dashes, and underscores."
-                    ).await;
-                }
-                return;
-            }
-            
             // Check if super user sent media attachments
-            if !msg.attachments.is_empty() && self.db.is_super_user(msg.author.id.get()).await.unwrap_or(false) {
+            if !msg.attachments.is_empty()
+                && self
+                    .db
+                    .is_super_user(msg.author.id.get())
+                    .await
+                    .unwrap_or(false)
+            {
                 self.handle_super_user_media_attachments(&ctx, &msg).await;
             } else if let Err(e) = self.command_handler.handle_dm_command(&ctx, &msg).await {
                 error!("Failed to handle DM command: {}", e);
@@ -1781,7 +2236,7 @@ impl EventHandler for Handler {
             {
                 error!("Failed to log message: {}", e);
             }
-            
+
             // Detect and log media recommendations in the message
             if let Some(guild_id) = msg.guild_id {
                 self.detect_and_log_media(
@@ -1791,7 +2246,8 @@ impl EventHandler for Handler {
                     guild_id.get(),
                     &msg.content,
                     timestamp.to_utc(),
-                ).await;
+                )
+                .await;
             }
 
             // Check if message contains a poll
@@ -1823,7 +2279,7 @@ impl EventHandler for Handler {
                     {
                         error!("Failed to log poll creation: {}", e);
                     }
-                    
+
                     // Check poll question for media recommendations
                     self.detect_and_log_media(
                         msg.id.get(),
@@ -1832,7 +2288,8 @@ impl EventHandler for Handler {
                         guild_id,
                         question_text,
                         timestamp.to_utc(),
-                    ).await;
+                    )
+                    .await;
                 }
 
                 // Log poll answers
@@ -1858,7 +2315,7 @@ impl EventHandler for Handler {
                         {
                             error!("Failed to log poll answer: {}", e);
                         }
-                        
+
                         // Check poll answer for media recommendations
                         self.detect_and_log_media(
                             msg.id.get(),
@@ -1867,7 +2324,8 @@ impl EventHandler for Handler {
                             guild_id,
                             answer_text,
                             timestamp.to_utc(),
-                        ).await;
+                        )
+                        .await;
                     }
                 }
             }
@@ -1964,7 +2422,7 @@ impl EventHandler for Handler {
             if let Err(e) = self.db.log_message_edit(event.id.get(), &content).await {
                 error!("Failed to log message edit: {}", e);
             }
-            
+
             // Detect and log media recommendations in edited message
             if let (Some(author), Some(guild_id)) = (event.author, event.guild_id) {
                 if !author.bot {
@@ -1974,8 +2432,12 @@ impl EventHandler for Handler {
                         event.channel_id.get(),
                         guild_id.get(),
                         &content,
-                        event.edited_timestamp.map(|t| t.to_utc()).unwrap_or_else(chrono::Utc::now),
-                    ).await;
+                        event
+                            .edited_timestamp
+                            .map(|t| t.to_utc())
+                            .unwrap_or_else(chrono::Utc::now),
+                    )
+                    .await;
                 }
             }
         }
@@ -2437,11 +2899,47 @@ impl EventHandler for Handler {
                         .required(true),
                     ),
                 )
+                .add_option(serenity::all::CreateCommandOption::new(
+                    serenity::all::CommandOptionType::SubCommand,
+                    "scan",
+                    "Scan this channel for media recommendations",
+                ))
                 .add_option(
                     serenity::all::CreateCommandOption::new(
                         serenity::all::CommandOptionType::SubCommand,
-                        "scan",
-                        "Scan this channel for media recommendations",
+                        "export",
+                        "Export your watchlist or recommendations",
+                    )
+                    .add_sub_option(
+                        serenity::all::CreateCommandOption::new(
+                            serenity::all::CommandOptionType::String,
+                            "data",
+                            "What to export",
+                        )
+                        .add_string_choice("my watchlist", "watchlist")
+                        .add_string_choice("all recommendations", "recommendations")
+                        .required(true),
+                    )
+                    .add_sub_option(
+                        serenity::all::CreateCommandOption::new(
+                            serenity::all::CommandOptionType::String,
+                            "format",
+                            "Export format",
+                        )
+                        .add_string_choice("CSV", "csv")
+                        .add_string_choice("JSON", "json")
+                        .add_string_choice("Markdown", "markdown")
+                        .required(true),
+                    )
+                    .add_sub_option(
+                        serenity::all::CreateCommandOption::new(
+                            serenity::all::CommandOptionType::Integer,
+                            "days",
+                            "Days of data to include (for recommendations)",
+                        )
+                        .min_int_value(1)
+                        .max_int_value(365)
+                        .required(false),
                     ),
                 ),
         )
@@ -2609,6 +3107,11 @@ impl EventHandler for Handler {
             }
             Interaction::Autocomplete(autocomplete) => {
                 self.handle_autocomplete(&ctx, autocomplete).await;
+            }
+            Interaction::Component(component) => {
+                if component.data.custom_id.starts_with("meme_folder_") {
+                    self.handle_meme_folder_button(&ctx, component).await;
+                }
             }
             _ => {}
         }
@@ -3039,13 +3542,8 @@ impl EventHandler for Handler {
                 {
                     error!("Failed to log poll vote: {}", e);
                 }
-                
-                // Check if this is a meme poll
-                let poll_key = format!("meme_poll_{}_{}", message.channel_id.get(), message_id);
-                if let Ok(Some(attachment_data)) = self.db.get_setting(&poll_key).await {
-                    // Process meme poll vote
-                    self.process_meme_poll_vote(&ctx, &message, poll, answer_id.get() as usize, &attachment_data).await;
-                }
+
+                // We no longer use polls for meme management, only log the vote
             }
         }
     }
@@ -3123,9 +3621,13 @@ impl EventHandler for Handler {
         {
             error!("Failed to log event creation: {}", e);
         }
-        
+
         // Check event name and description for media recommendations
-        let event_text = format!("{} {}", event.name, event.description.as_deref().unwrap_or(""));
+        let event_text = format!(
+            "{} {}",
+            event.name,
+            event.description.as_deref().unwrap_or("")
+        );
         self.detect_and_log_media(
             event.id.get(), // Using event ID as message ID
             event.creator_id.unwrap_or_default().get(),
@@ -3133,7 +3635,8 @@ impl EventHandler for Handler {
             event.guild_id.get(),
             &event_text,
             chrono::Utc::now(),
-        ).await;
+        )
+        .await;
     }
 
     async fn guild_scheduled_event_update(&self, _ctx: Context, event: ScheduledEvent) {

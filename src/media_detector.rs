@@ -51,11 +51,11 @@ impl MediaDetector {
             url_pattern: Regex::new(r#"https?://[^\s<>"{}|\\^`\[\]]+"#).unwrap(),
         }
     }
-    
+
     pub fn detect_media(&self, content: &str) -> Vec<MediaRecommendation> {
         let mut recommendations = Vec::new();
         let mut found_titles = HashMap::new();
-        
+
         // Check for anime mentions
         for pattern in &self.anime_patterns {
             for cap in pattern.captures_iter(content) {
@@ -63,10 +63,11 @@ impl MediaDetector {
                     let title = self.clean_title(title_match.as_str());
                     if !title.is_empty() && title.len() > 2 && !found_titles.contains_key(&title) {
                         found_titles.insert(title.clone(), "anime");
-                        
+
                         // Extract URL if present nearby
-                        let url = self.find_nearby_url(content, title_match.start(), title_match.end());
-                        
+                        let url =
+                            self.find_nearby_url(content, title_match.start(), title_match.end());
+
                         recommendations.push(MediaRecommendation {
                             media_type: "anime",
                             title,
@@ -77,7 +78,7 @@ impl MediaDetector {
                 }
             }
         }
-        
+
         // Check for TV show mentions
         for pattern in &self.tv_show_patterns {
             for cap in pattern.captures_iter(content) {
@@ -85,9 +86,10 @@ impl MediaDetector {
                     let title = self.clean_title(title_match.as_str());
                     if !title.is_empty() && title.len() > 2 && !found_titles.contains_key(&title) {
                         found_titles.insert(title.clone(), "tv_show");
-                        
-                        let url = self.find_nearby_url(content, title_match.start(), title_match.end());
-                        
+
+                        let url =
+                            self.find_nearby_url(content, title_match.start(), title_match.end());
+
                         recommendations.push(MediaRecommendation {
                             media_type: "tv_show",
                             title,
@@ -98,7 +100,7 @@ impl MediaDetector {
                 }
             }
         }
-        
+
         // Check for game mentions
         for pattern in &self.game_patterns {
             for cap in pattern.captures_iter(content) {
@@ -106,9 +108,10 @@ impl MediaDetector {
                     let title = self.clean_title(title_match.as_str());
                     if !title.is_empty() && title.len() > 2 && !found_titles.contains_key(&title) {
                         found_titles.insert(title.clone(), "game");
-                        
-                        let url = self.find_nearby_url(content, title_match.start(), title_match.end());
-                        
+
+                        let url =
+                            self.find_nearby_url(content, title_match.start(), title_match.end());
+
                         recommendations.push(MediaRecommendation {
                             media_type: "game",
                             title,
@@ -119,13 +122,13 @@ impl MediaDetector {
                 }
             }
         }
-        
+
         // Check for YouTube videos
         for cap in self.youtube_pattern.captures_iter(content) {
             if let Some(video_id) = cap.get(1) {
                 let url = format!("https://youtube.com/watch?v={}", video_id.as_str());
                 let title = format!("YouTube: {}", video_id.as_str());
-                
+
                 if !found_titles.contains_key(&title) {
                     found_titles.insert(title.clone(), "youtube");
                     recommendations.push(MediaRecommendation {
@@ -137,14 +140,23 @@ impl MediaDetector {
                 }
             }
         }
-        
+
         // Look for streaming service mentions with context
         let streaming_services = [
-            ("Netflix", vec!["watching on Netflix", "check out .+ on Netflix"]),
-            ("Crunchyroll", vec!["on Crunchyroll", "watching .+ on Crunchyroll"]),
-            ("Steam", vec!["on Steam", "get it on Steam", "playing .+ on Steam"]),
+            (
+                "Netflix",
+                vec!["watching on Netflix", "check out .+ on Netflix"],
+            ),
+            (
+                "Crunchyroll",
+                vec!["on Crunchyroll", "watching .+ on Crunchyroll"],
+            ),
+            (
+                "Steam",
+                vec!["on Steam", "get it on Steam", "playing .+ on Steam"],
+            ),
         ];
-        
+
         for (service, patterns) in &streaming_services {
             for pattern_str in patterns {
                 if let Ok(pattern) = Regex::new(&format!("(?i){}", pattern_str)) {
@@ -159,33 +171,35 @@ impl MediaDetector {
                 }
             }
         }
-        
+
         recommendations
     }
-    
+
     fn clean_title(&self, title: &str) -> String {
         let cleaned = title
             .trim()
             .trim_matches(|c: char| !c.is_alphanumeric() && c != ' ')
             .replace("  ", " ");
-        
+
         // Remove common words at the end
-        let stop_words = ["the", "a", "an", "and", "or", "but", "is", "was", "are", "were"];
+        let stop_words = [
+            "the", "a", "an", "and", "or", "but", "is", "was", "are", "were",
+        ];
         let words: Vec<&str> = cleaned.split_whitespace().collect();
-        
+
         if words.len() > 1 && stop_words.contains(&words.last().unwrap().to_lowercase().as_str()) {
-            words[..words.len()-1].join(" ")
+            words[..words.len() - 1].join(" ")
         } else {
             cleaned
         }
     }
-    
+
     fn find_nearby_url(&self, content: &str, start: usize, end: usize) -> Option<String> {
         // Look for URLs within 50 characters before or after the title mention
         let search_start = start.saturating_sub(50);
         let search_end = (end + 50).min(content.len());
         let search_area = &content[search_start..search_end];
-        
+
         if let Some(url_match) = self.url_pattern.find(search_area) {
             Some(url_match.as_str().to_string())
         } else {

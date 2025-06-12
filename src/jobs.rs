@@ -100,10 +100,10 @@ pub async fn start_background_jobs(
     })?;
 
     scheduler.add(status_cleanup_job).await?;
-    
+
     // Media recommendations scanning job - runs every 30 minutes
     let db_media_scan = db.clone();
-    
+
     let media_scan_job = Job::new_async("0 */30 * * * *", move |_uuid, _l| {
         let db = db_media_scan.clone();
         Box::pin(async move {
@@ -114,7 +114,7 @@ pub async fn start_background_jobs(
             });
         })
     })?;
-    
+
     scheduler.add(media_scan_job).await?;
     scheduler.start().await?;
 
@@ -494,24 +494,27 @@ async fn cleanup_old_status_logs(db: Database) -> Result<()> {
 
 async fn scan_for_media_recommendations(db: Database) -> Result<()> {
     info!("Starting media recommendations scan");
-    
+
     // Get last scanned message ID
     let (last_scanned_id, last_scan_time) = match db.get_media_scan_checkpoint().await {
         Ok(checkpoint) => checkpoint,
         Err(_) => (0, chrono::Utc::now()),
     };
-    
-    info!("Last scanned message ID: {}, last scan time: {}", last_scanned_id, last_scan_time);
-    
+
+    info!(
+        "Last scanned message ID: {}, last scan time: {}",
+        last_scanned_id, last_scan_time
+    );
+
     // Create media detector
     let detector = MediaDetector::new();
-    
+
     // Process messages in batches
     const BATCH_SIZE: u32 = 1000;
     let mut messages_scanned = 0;
     let mut recommendations_found = 0;
     let mut current_last_id = last_scanned_id;
-    
+
     loop {
         // Get next batch of unscanned messages
         let messages = match db.get_unscanned_messages(current_last_id, BATCH_SIZE).await {
@@ -521,48 +524,50 @@ async fn scan_for_media_recommendations(db: Database) -> Result<()> {
                 break;
             }
         };
-        
+
         if messages.is_empty() {
             info!("No more messages to scan");
             break;
         }
-        
+
         // Process each message
         for (msg_id, user_id, channel_id, guild_id, content, timestamp) in &messages {
             messages_scanned += 1;
             current_last_id = *msg_id;
-            
+
             // Detect media recommendations
             let recommendations = detector.detect_media(&content);
-            
+
             for rec in recommendations {
-                if let Err(e) = db.log_media_recommendation(
-                    *msg_id,
-                    *user_id,
-                    *channel_id,
-                    *guild_id,
-                    rec.media_type,
-                    &rec.title,
-                    rec.url.as_deref(),
-                    rec.confidence,
-                    *timestamp,
-                ).await {
+                if let Err(e) = db
+                    .log_media_recommendation(
+                        *msg_id,
+                        *user_id,
+                        *channel_id,
+                        *guild_id,
+                        rec.media_type,
+                        &rec.title,
+                        rec.url.as_deref(),
+                        rec.confidence,
+                        *timestamp,
+                    )
+                    .await
+                {
                     tracing::error!("Failed to log media recommendation: {}", e);
                 } else {
                     recommendations_found += 1;
                 }
             }
         }
-        
+
         // Update checkpoint after each batch
-        if let Err(e) = db.update_media_scan_checkpoint(
-            current_last_id,
-            messages_scanned,
-            recommendations_found,
-        ).await {
+        if let Err(e) = db
+            .update_media_scan_checkpoint(current_last_id, messages_scanned, recommendations_found)
+            .await
+        {
             tracing::error!("Failed to update scan checkpoint: {}", e);
         }
-        
+
         // Log progress
         if messages_scanned % 10000 == 0 {
             info!(
@@ -570,17 +575,17 @@ async fn scan_for_media_recommendations(db: Database) -> Result<()> {
                 messages_scanned, recommendations_found
             );
         }
-        
+
         // If we got less than a full batch, we're done
         if messages.len() < BATCH_SIZE as usize {
             break;
         }
     }
-    
+
     info!(
         "Media recommendations scan completed. Scanned {} messages, found {} recommendations",
         messages_scanned, recommendations_found
     );
-    
+
     Ok(())
 }

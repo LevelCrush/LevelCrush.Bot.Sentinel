@@ -344,6 +344,10 @@ All commands are implemented as Discord slash commands:
 - `/watchlist remove <type> <title>` - Remove an item from your watchlist
 - `/watchlist priority <type> <title> <new_priority>` - Update priority of an existing item
 - `/watchlist scan` - Scan the current channel's last 100 messages for media recommendations with real-time progress updates
+- `/watchlist export <data> <format> [days]` - Export your watchlist or recommendations
+  - Data options: `watchlist` (your personal list) or `recommendations` (community picks)
+  - Format options: `CSV`, `JSON`, or `Markdown`
+  - Days: For recommendations, specify how many days of data to include (1-365, default: 30)
 
 ### Legacy DM Support
 
