@@ -1424,12 +1424,27 @@ impl Handler {
             }
             "vote" => {
                 if let serenity::all::CommandDataOptionValue::SubCommand(opts) = subcommand_value {
-                    let item_id = opts
+                    // Get the item value from autocomplete (format: "id:title")
+                    let item_value = opts
                         .iter()
-                        .find(|o| o.name == "id")
-                        .and_then(|o| o.value.as_i64())
+                        .find(|o| o.name == "item")
+                        .and_then(|o| o.value.as_str())
+                        .unwrap_or("");
+
+                    // Parse the ID from the autocomplete value
+                    let item_id = item_value
+                        .split(':')
+                        .next()
+                        .and_then(|id_str| id_str.parse::<i32>().ok())
                         .map(|id| id as u64)
                         .unwrap_or(0);
+
+                    let item_title = item_value
+                        .split(':')
+                        .skip(1)
+                        .collect::<Vec<_>>()
+                        .join(":");
+
                     let vote_action = opts
                         .iter()
                         .find(|o| o.name == "vote")
@@ -1439,7 +1454,7 @@ impl Handler {
                     if item_id == 0 {
                         let response = CreateInteractionResponse::Message(
                             CreateInteractionResponseMessage::new()
-                                .content("Invalid item ID.")
+                                .content("Invalid item selection.")
                                 .ephemeral(true),
                         );
                         command.create_response(&ctx.http, response).await.ok();
@@ -1462,7 +1477,7 @@ impl Handler {
 
                             let response = CreateInteractionResponse::Message(
                                 CreateInteractionResponseMessage::new()
-                                    .content(format!("{} item #{}", action_text, item_id))
+                                    .content(format!("{} **{}**", action_text, item_title))
                                     .ephemeral(true),
                             );
                             command.create_response(&ctx.http, response).await.ok();
@@ -1880,7 +1895,7 @@ impl Handler {
 
     fn generate_global_export(
         &self,
-        items: Vec<(u64, String, String, Option<String>, Option<String>, i64, i64, String)>,
+        items: Vec<(i32, String, String, Option<String>, Option<String>, i64, i64, String)>,
         format: &str,
     ) -> String {
         match format {
@@ -2353,40 +2368,95 @@ impl Handler {
         ctx: &Context,
         autocomplete: serenity::all::CommandInteraction,
     ) {
-        // Find which option is being autocompleted by checking the resolved data
-        let input = autocomplete
-            .data
-            .options
-            .iter()
-            .find(|opt| opt.name == "user")
-            .and_then(|opt| opt.value.as_str())
-            .unwrap_or("");
+        let choices = match autocomplete.data.name.as_str() {
+            "global" => {
+                // Check if this is the vote subcommand
+                if let Some(subcommand) = autocomplete.data.options.first() {
+                    if subcommand.name == "vote" {
+                        // Get the input for the item field from subcommand options
+                        let input = if let serenity::all::CommandDataOptionValue::SubCommand(sub_opts) = &subcommand.value {
+                            sub_opts
+                                .iter()
+                                .find(|opt| opt.name == "item")
+                                .and_then(|opt| opt.value.as_str())
+                                .unwrap_or("")
+                        } else {
+                            ""
+                        };
 
-        // Search users in database
-        let users = match self.db.search_users(input, 25).await {
-            Ok(users) => users,
-            Err(e) => {
-                error!("Failed to search users for autocomplete: {}", e);
-                vec![]
+                        // Search global watchlist items
+                        match self.db.search_global_watchlist(input, 25).await {
+                            Ok(items) => {
+                                items
+                                    .into_iter()
+                                    .map(|(id, media_type, title, _, _, upvotes, downvotes, _)| {
+                                        let net_votes = upvotes - downvotes;
+                                        let emoji = match media_type.as_str() {
+                                            "anime" => "🎌",
+                                            "tv_show" => "📺",
+                                            "movie" => "🎬",
+                                            "game" => "🎮",
+                                            "youtube" => "📹",
+                                            "music" => "🎵",
+                                            _ => "📋",
+                                        };
+                                        let display = format!(
+                                            "{} {} [{}] (Net: {})",
+                                            emoji, title, media_type, net_votes
+                                        );
+                                        let value = format!("{}:{}", id, title);
+                                        serenity::all::AutocompleteChoice::new(display, value)
+                                    })
+                                    .collect()
+                            }
+                            Err(e) => {
+                                error!("Failed to search global watchlist for autocomplete: {}", e);
+                                vec![]
+                            }
+                        }
+                    } else {
+                        vec![]
+                    }
+                } else {
+                    vec![]
+                }
+            }
+            _ => {
+                // Handle user autocomplete for other commands
+                let input = autocomplete
+                    .data
+                    .options
+                    .iter()
+                    .find(|opt| opt.name == "user")
+                    .and_then(|opt| opt.value.as_str())
+                    .unwrap_or("");
+
+                // Search users in database
+                match self.db.search_users(input, 25).await {
+                    Ok(users) => {
+                        users
+                            .iter()
+                            .map(|(_user_id, username, global_handle, nickname)| {
+                                // Build display name
+                                let mut display = username.clone();
+                                if let Some(handle) = global_handle {
+                                    display = format!("@{}", handle);
+                                }
+                                if let Some(nick) = nickname {
+                                    display = format!("{} ({})", display, nick);
+                                }
+
+                                serenity::all::AutocompleteChoice::new(display.clone(), display)
+                            })
+                            .collect()
+                    }
+                    Err(e) => {
+                        error!("Failed to search users for autocomplete: {}", e);
+                        vec![]
+                    }
+                }
             }
         };
-
-        // Create autocomplete choices
-        let choices: Vec<serenity::all::AutocompleteChoice> = users
-            .iter()
-            .map(|(_user_id, username, global_handle, nickname)| {
-                // Build display name
-                let mut display = username.clone();
-                if let Some(handle) = global_handle {
-                    display = format!("@{}", handle);
-                }
-                if let Some(nick) = nickname {
-                    display = format!("{} ({})", display, nick);
-                }
-
-                serenity::all::AutocompleteChoice::new(display.clone(), display)
-            })
-            .collect();
 
         // Send autocomplete response
         let response = CreateInteractionResponse::Autocomplete(
@@ -3074,11 +3144,12 @@ impl EventHandler for Handler {
                     )
                     .add_sub_option(
                         serenity::all::CreateCommandOption::new(
-                            serenity::all::CommandOptionType::Integer,
-                            "id",
-                            "ID of the item to vote on",
+                            serenity::all::CommandOptionType::String,
+                            "item",
+                            "Item to vote on",
                         )
-                        .required(true),
+                        .required(true)
+                        .set_autocomplete(true),
                     )
                     .add_sub_option(
                         serenity::all::CreateCommandOption::new(

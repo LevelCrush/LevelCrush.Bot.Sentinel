@@ -126,6 +126,12 @@ All notable changes to Sentinel Discord Bot will be documented in this file.
   - `/snort` - Fun command with global counter
   - Legacy DM commands still supported for backward compatibility
 
+- **Global watchlist voting now uses autocomplete** - Improved user experience
+  - Changed from numeric ID input to searchable item selection
+  - Autocomplete shows emoji, title, media type, and net votes
+  - Search by partial title match as you type
+  - Vote confirmation shows item title instead of ID number
+
 ### Fixed
 - **Database Schema Inconsistencies** - Aligned table and column names
   - Fixed `system_settings` vs `settings` table name mismatch
@@ -135,6 +141,12 @@ All notable changes to Sentinel Discord Bot will be documented in this file.
   - Fixed member_status_logs structure to match actual usage
   - Corrected vote type ENUM values in global_watchlist_votes
   - Added missing `actor_id` column to channel_logs table
+
+- **Global watchlist SQL type mismatches** - Fixed database query errors
+  - Changed ID column type from `u64` to `i32` to match MariaDB `INT`
+  - Added `CAST(... AS SIGNED)` for SUM aggregates returning DECIMAL
+  - Fixed "Reference 'upvotes' not supported" error in ORDER BY clause
+  - Updated all related functions to handle proper type conversions
 
 ## [0.1.0] - 2025-06-09
 

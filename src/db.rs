@@ -1190,14 +1190,14 @@ impl Database {
 
         // Get the ID of the inserted/updated item
         if result.rows_affected() > 0 {
-            let id: (u64,) = sqlx::query_as(
+            let id: (i32,) = sqlx::query_as(
                 "SELECT id FROM global_watchlist WHERE media_type = ? AND title = ?"
             )
             .bind(media_type)
             .bind(title)
             .fetch_one(&self.pool)
             .await?;
-            Ok(id.0)
+            Ok(id.0 as u64)
         } else {
             Err(anyhow::anyhow!("Failed to add to global watchlist"))
         }
@@ -1218,7 +1218,7 @@ impl Database {
                 voted_at = NOW()
             "#,
         )
-        .bind(watchlist_id as i64)
+        .bind(watchlist_id as i32)
         .bind(user_id as i64)
         .bind(vote_type)
         .execute(&self.pool)
@@ -1235,7 +1235,7 @@ impl Database {
         let result = sqlx::query(
             "DELETE FROM global_watchlist_votes WHERE watchlist_id = ? AND user_id = ?"
         )
-        .bind(watchlist_id as i64)
+        .bind(watchlist_id as i32)
         .bind(user_id as i64)
         .execute(&self.pool)
         .await?;
@@ -1247,7 +1247,7 @@ impl Database {
         &self,
         limit: u32,
         media_type: Option<&str>,
-    ) -> Result<Vec<(u64, String, String, Option<String>, Option<String>, i64, i64, String)>> {
+    ) -> Result<Vec<(i32, String, String, Option<String>, Option<String>, i64, i64, String)>> {
         let query = if let Some(media_type) = media_type {
             sqlx::query_as(
                 r#"
@@ -1257,15 +1257,17 @@ impl Database {
                     gw.title,
                     gw.url,
                     gw.description,
-                    COALESCE(SUM(CASE WHEN gwv.vote_type = 'up' THEN 1 ELSE 0 END), 0) as upvotes,
-                    COALESCE(SUM(CASE WHEN gwv.vote_type = 'down' THEN 1 ELSE 0 END), 0) as downvotes,
+                    CAST(COALESCE(SUM(CASE WHEN gwv.vote_type = 'up' THEN 1 ELSE 0 END), 0) AS SIGNED) as upvotes,
+                    CAST(COALESCE(SUM(CASE WHEN gwv.vote_type = 'down' THEN 1 ELSE 0 END), 0) AS SIGNED) as downvotes,
                     u.username as added_by_username
                 FROM global_watchlist gw
                 LEFT JOIN global_watchlist_votes gwv ON gw.id = gwv.watchlist_id
                 JOIN users u ON gw.added_by = u.discord_user_id
                 WHERE gw.media_type = ?
                 GROUP BY gw.id, gw.media_type, gw.title, gw.url, gw.description, u.username
-                ORDER BY (upvotes - downvotes) DESC, gw.added_at DESC
+                ORDER BY (CAST(COALESCE(SUM(CASE WHEN gwv.vote_type = 'up' THEN 1 ELSE 0 END), 0) AS SIGNED) - 
+                     CAST(COALESCE(SUM(CASE WHEN gwv.vote_type = 'down' THEN 1 ELSE 0 END), 0) AS SIGNED)) DESC, 
+                     gw.added_at DESC
                 LIMIT ?
                 "#,
             )
@@ -1280,21 +1282,23 @@ impl Database {
                     gw.title,
                     gw.url,
                     gw.description,
-                    COALESCE(SUM(CASE WHEN gwv.vote_type = 'up' THEN 1 ELSE 0 END), 0) as upvotes,
-                    COALESCE(SUM(CASE WHEN gwv.vote_type = 'down' THEN 1 ELSE 0 END), 0) as downvotes,
+                    CAST(COALESCE(SUM(CASE WHEN gwv.vote_type = 'up' THEN 1 ELSE 0 END), 0) AS SIGNED) as upvotes,
+                    CAST(COALESCE(SUM(CASE WHEN gwv.vote_type = 'down' THEN 1 ELSE 0 END), 0) AS SIGNED) as downvotes,
                     u.username as added_by_username
                 FROM global_watchlist gw
                 LEFT JOIN global_watchlist_votes gwv ON gw.id = gwv.watchlist_id
                 JOIN users u ON gw.added_by = u.discord_user_id
                 GROUP BY gw.id, gw.media_type, gw.title, gw.url, gw.description, u.username
-                ORDER BY (upvotes - downvotes) DESC, gw.added_at DESC
+                ORDER BY (CAST(COALESCE(SUM(CASE WHEN gwv.vote_type = 'up' THEN 1 ELSE 0 END), 0) AS SIGNED) - 
+                     CAST(COALESCE(SUM(CASE WHEN gwv.vote_type = 'down' THEN 1 ELSE 0 END), 0) AS SIGNED)) DESC, 
+                     gw.added_at DESC
                 LIMIT ?
                 "#,
             )
             .bind(limit)
         };
 
-        let items: Vec<(u64, String, String, Option<String>, Option<String>, i64, i64, String)> = 
+        let items: Vec<(i32, String, String, Option<String>, Option<String>, i64, i64, String)> = 
             query.fetch_all(&self.pool).await?;
 
         Ok(items)
@@ -1320,10 +1324,10 @@ impl Database {
         &self,
         query: &str,
         limit: u32,
-    ) -> Result<Vec<(u64, String, String, Option<String>, Option<String>, i64, i64, String)>> {
+    ) -> Result<Vec<(i32, String, String, Option<String>, Option<String>, i64, i64, String)>> {
         let search_pattern = format!("%{}%", query);
 
-        let items: Vec<(u64, String, String, Option<String>, Option<String>, i64, i64, String)> = sqlx::query_as(
+        let items: Vec<(i32, String, String, Option<String>, Option<String>, i64, i64, String)> = sqlx::query_as(
             r#"
             SELECT 
                 gw.id,
@@ -1331,15 +1335,17 @@ impl Database {
                 gw.title,
                 gw.url,
                 gw.description,
-                COALESCE(SUM(CASE WHEN gwv.vote_type = 'up' THEN 1 ELSE 0 END), 0) as upvotes,
-                COALESCE(SUM(CASE WHEN gwv.vote_type = 'down' THEN 1 ELSE 0 END), 0) as downvotes,
+                CAST(COALESCE(SUM(CASE WHEN gwv.vote_type = 'up' THEN 1 ELSE 0 END), 0) AS SIGNED) as upvotes,
+                CAST(COALESCE(SUM(CASE WHEN gwv.vote_type = 'down' THEN 1 ELSE 0 END), 0) AS SIGNED) as downvotes,
                 u.username as added_by_username
             FROM global_watchlist gw
             LEFT JOIN global_watchlist_votes gwv ON gw.id = gwv.watchlist_id
             JOIN users u ON gw.added_by = u.discord_user_id
             WHERE gw.title LIKE ? OR gw.description LIKE ?
             GROUP BY gw.id, gw.media_type, gw.title, gw.url, gw.description, u.username
-            ORDER BY (upvotes - downvotes) DESC, gw.added_at DESC
+            ORDER BY (CAST(COALESCE(SUM(CASE WHEN gwv.vote_type = 'up' THEN 1 ELSE 0 END), 0) AS SIGNED) - 
+                     CAST(COALESCE(SUM(CASE WHEN gwv.vote_type = 'down' THEN 1 ELSE 0 END), 0) AS SIGNED)) DESC, 
+                     gw.added_at DESC
             LIMIT ?
             "#,
         )

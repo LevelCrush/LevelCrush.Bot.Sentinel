@@ -199,6 +199,8 @@ All commands are implemented as Discord slash commands:
 
 **User Autocomplete**: All commands that target users (`/kick`, `/ban`, `/timeout`, `/whitelist`) provide autocomplete suggestions from the database. Start typing a username, handle, or nickname to see matching users.
 
+**Global Watchlist Autocomplete**: The `/global vote` command now uses autocomplete for item selection instead of numeric IDs. Start typing part of an item's title to see suggestions showing the emoji, title, media type, and current net votes.
+
 **Snort Cooldown**: The `/snort` command has a per-user cooldown (default: 30 seconds). Each user can only snort once per cooldown period, but multiple users can snort simultaneously.
 
 **Watchlist Features**: The `/watchlist` command provides personal media tracking:
@@ -219,7 +221,8 @@ All commands are implemented as Discord slash commands:
 - `/global add <type> <title> [url] [description]` - Add media to the global watchlist
   - Automatically upvotes the item you add
   - Duplicate titles of the same type update the existing entry
-- `/global vote <id> <vote>` - Vote on global watchlist items
+- `/global vote <item> <vote>` - Vote on global watchlist items
+  - Item selection uses autocomplete - start typing to search by title
   - Vote options: `upvote`, `downvote`, or `remove` (to remove your vote)
   - Items with more net votes appear higher in the list
 - `/global search <query>` - Search the global watchlist by title or description
