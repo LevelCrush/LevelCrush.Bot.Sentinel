@@ -1,0 +1,58 @@
+{
+  "db_name": "MySQL",
+  "query": "\n            SELECT DISTINCT discord_user_id, username, global_handle, nickname\n            FROM users\n            WHERE username LIKE ? \n               OR global_handle LIKE ?\n               OR nickname LIKE ?\n            ORDER BY \n                CASE \n                    WHEN username LIKE ? THEN 1\n                    WHEN global_handle LIKE ? THEN 2\n                    WHEN nickname LIKE ? THEN 3\n                END,\n                last_seen DESC\n            LIMIT ?\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "discord_user_id",
+        "type_info": {
+          "type": "LongLong",
+          "flags": "NOT_NULL | UNIQUE_KEY | MULTIPLE_KEY | NO_DEFAULT_VALUE",
+          "char_set": 63,
+          "max_size": 20
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "username",
+        "type_info": {
+          "type": "VarString",
+          "flags": "",
+          "char_set": 224,
+          "max_size": 1020
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "global_handle",
+        "type_info": {
+          "type": "VarString",
+          "flags": "",
+          "char_set": 224,
+          "max_size": 1020
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "nickname",
+        "type_info": {
+          "type": "VarString",
+          "flags": "",
+          "char_set": 224,
+          "max_size": 1020
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "c6ece394c806a69cd7b2f9e8e2577d1c0a805440a437c82bbac86e13942b6aa3"
+}
