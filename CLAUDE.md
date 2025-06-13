@@ -99,205 +99,46 @@ The project uses sqlx migrations for database schema management:
 
 ## Database Schema (MariaDB)
 
-```sql
--- Track all Discord users
-CREATE TABLE users (
-  id INT PRIMARY KEY AUTO_INCREMENT,
-  discord_user_id BIGINT UNIQUE NOT NULL,
-  username VARCHAR(255),
-  discriminator VARCHAR(10),
-  global_handle VARCHAR(255),
-  nickname VARCHAR(255),
-  last_seen DATETIME DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-);
+The database schema is managed through sqlx migrations. The full schema definition can be found in:
+- `migrations/20250612195032_initial_schema.sql` - Complete initial schema
+- `migrations/20250612195032_initial_schema.down.sql` - Rollback migration
 
--- Moderator whitelist
-CREATE TABLE command_whitelist (
-  id INT PRIMARY KEY AUTO_INCREMENT,
-  discord_user_id BIGINT UNIQUE NOT NULL,
-  added_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
+### Main Tables Overview:
 
--- Super user whitelist
-CREATE TABLE super_user_whitelist (
-  id INT PRIMARY KEY AUTO_INCREMENT,
-  discord_user_id BIGINT UNIQUE NOT NULL,
-  added_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
+**User Management:**
+- `users` - Discord user profiles with usernames, handles, and nicknames
+- `command_whitelist` - Users authorized for moderation commands
+- `super_user_whitelist` - Users with admin privileges
 
--- Message logs
-CREATE TABLE message_logs (
-  id INT PRIMARY KEY AUTO_INCREMENT,
-  message_id BIGINT NOT NULL,
-  user_id BIGINT NOT NULL,
-  channel_id BIGINT NOT NULL,
-  content TEXT,
-  timestamp DATETIME,
-  edited BOOLEAN DEFAULT FALSE
-);
+**Message & Communication:**
+- `message_logs` - All message content with edit tracking
+- `message_attachments` - Media attachment metadata and local paths
+- `voice_logs` - Voice channel activity (join/leave/switch)
+- `forum_logs` - Thread and forum post creation
+- `dm_logs` - Direct messages to the bot
+- `bot_response_logs` - Bot command responses
 
--- Voice channel activity
-CREATE TABLE voice_logs (
-  id INT PRIMARY KEY AUTO_INCREMENT,
-  user_id BIGINT NOT NULL,
-  channel_id BIGINT NOT NULL,
-  action ENUM('join', 'leave', 'switch'),
-  timestamp DATETIME
-);
+**Member Tracking:**
+- `member_status_logs` - User presence and activity tracking
+- `nickname_logs` - Nickname change history
+- `member_logs` - Join/leave events
+- `channel_logs` - Channel modifications and audit trail
 
--- Forum and thread events
-CREATE TABLE forum_logs (
-  id INT PRIMARY KEY AUTO_INCREMENT,
-  thread_id BIGINT NOT NULL,
-  user_id BIGINT NOT NULL,
-  title TEXT,
-  content TEXT,
-  created_at DATETIME
-);
+**Interactive Features:**
+- `poll_logs`, `poll_answers`, `poll_votes` - Discord poll tracking
+- `event_logs`, `event_interests`, `event_update_logs` - Discord event tracking
+- `snort_counter`, `user_snort_cooldowns` - Snort command tracking
 
--- Direct message logs
-CREATE TABLE dm_logs (
-  id INT PRIMARY KEY AUTO_INCREMENT,
-  message_id BIGINT NOT NULL,
-  user_id BIGINT NOT NULL,
-  content TEXT,
-  command VARCHAR(50),
-  timestamp DATETIME
-);
+**Media & Recommendations:**
+- `media_recommendations` - Extracted media mentions from messages
+- `media_scan_checkpoint` - Scan progress tracking
+- `user_watchlist` - Personal media watchlists
+- `global_watchlist`, `global_watchlist_votes` - Community watchlist
 
--- Bot response logs
-CREATE TABLE bot_response_logs (
-  id INT PRIMARY KEY AUTO_INCREMENT,
-  user_id BIGINT NOT NULL,
-  command VARCHAR(50),
-  response_type VARCHAR(50),
-  response_content TEXT,
-  success BOOLEAN DEFAULT TRUE,
-  timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
--- Snort counter
-CREATE TABLE snort_counter (
-  id INT PRIMARY KEY AUTO_INCREMENT,
-  count BIGINT DEFAULT 0,
-  last_snort_time DATETIME,
-  last_snort_user_id BIGINT,
-  last_snort_guild_id BIGINT
-);
-
--- User snort cooldowns (per-user cooldown tracking)
-CREATE TABLE user_snort_cooldowns (
-  user_id BIGINT PRIMARY KEY,
-  last_snort_time DATETIME NOT NULL
-);
-
--- Discord polls tracking
-CREATE TABLE poll_logs (
-  id INT PRIMARY KEY AUTO_INCREMENT,
-  poll_id VARCHAR(255) NOT NULL,
-  message_id BIGINT NOT NULL,
-  channel_id BIGINT NOT NULL,
-  guild_id BIGINT NOT NULL,
-  creator_id BIGINT NOT NULL,
-  question TEXT,
-  created_at DATETIME NOT NULL,
-  expires_at DATETIME,
-  closed_at DATETIME,
-  is_multiselect BOOLEAN DEFAULT FALSE
-);
-
-CREATE TABLE poll_answers (
-  id INT PRIMARY KEY AUTO_INCREMENT,
-  poll_id VARCHAR(255) NOT NULL,
-  answer_id INT NOT NULL,
-  answer_text TEXT,
-  emoji VARCHAR(255)
-);
-
-CREATE TABLE poll_votes (
-  id INT PRIMARY KEY AUTO_INCREMENT,
-  poll_id VARCHAR(255) NOT NULL,
-  user_id BIGINT NOT NULL,
-  answer_id INT NOT NULL,
-  voted_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
--- Discord scheduled events tracking
-CREATE TABLE event_logs (
-  id INT PRIMARY KEY AUTO_INCREMENT,
-  event_id BIGINT NOT NULL,
-  guild_id BIGINT NOT NULL,
-  channel_id BIGINT,
-  creator_id BIGINT NOT NULL,
-  name TEXT NOT NULL,
-  description TEXT,
-  start_time DATETIME NOT NULL,
-  end_time DATETIME,
-  location VARCHAR(500),
-  status VARCHAR(50),
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-);
-
-CREATE TABLE event_interests (
-  id INT PRIMARY KEY AUTO_INCREMENT,
-  event_id BIGINT NOT NULL,
-  user_id BIGINT NOT NULL,
-  interest_type ENUM('interested', 'maybe', 'not_interested', 'attending'),
-  expressed_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE event_update_logs (
-  id INT PRIMARY KEY AUTO_INCREMENT,
-  event_id BIGINT NOT NULL,
-  field_name VARCHAR(100) NOT NULL,
-  old_value TEXT,
-  new_value TEXT,
-  updated_by BIGINT,
-  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
--- Media recommendations tracking
-CREATE TABLE media_recommendations (
-  id INT PRIMARY KEY AUTO_INCREMENT,
-  message_id BIGINT NOT NULL,
-  user_id BIGINT NOT NULL,
-  channel_id BIGINT NOT NULL,
-  guild_id BIGINT NOT NULL,
-  media_type ENUM('anime', 'tv_show', 'movie', 'game', 'youtube', 'music', 'other') NOT NULL,
-  title VARCHAR(500),
-  url TEXT,
-  confidence_score FLOAT DEFAULT 0.0,
-  extracted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  message_timestamp DATETIME NOT NULL
-);
-
-CREATE TABLE media_scan_checkpoint (
-  id INT PRIMARY KEY DEFAULT 1,
-  last_scanned_message_id BIGINT NOT NULL DEFAULT 0,
-  last_scan_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-  messages_scanned INT DEFAULT 0,
-  recommendations_found INT DEFAULT 0
-);
-
--- User personal media watchlist
-CREATE TABLE user_watchlist (
-  id INT PRIMARY KEY AUTO_INCREMENT,
-  user_id BIGINT NOT NULL,
-  media_type ENUM('anime', 'tv_show', 'movie', 'game', 'youtube', 'music', 'other') NOT NULL,
-  title VARCHAR(500) NOT NULL,
-  url TEXT,
-  priority INT DEFAULT 50,
-  status ENUM('plan_to_watch', 'watching', 'completed', 'dropped', 'on_hold') DEFAULT 'plan_to_watch',
-  added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  notes TEXT,
-  UNIQUE KEY unique_user_media (user_id, media_type, title),
-  INDEX idx_user_priority (user_id, priority DESC),
-  INDEX idx_user_status (user_id, status)
-);
-```
+**System:**
+- `system_settings` - Configurable bot settings
+- `channel_scan_history` - Historical message scan progress
+- `meme_folders` - Meme organization folders
 
 ---
 
@@ -559,6 +400,16 @@ scp .env pi@<ip>:~/
 ```
 
 ---
+
+## Database Migration Guidelines
+
+When making database schema changes:
+1. **Create a new migration**: `sqlx migrate add <descriptive_name>`
+2. **Write the up migration**: Add your schema changes to the `.sql` file
+3. **Write the down migration**: Add rollback logic to the `.down.sql` file
+4. **Test locally**: Run `sqlx migrate run` and verify changes
+5. **Test rollback**: Run `sqlx migrate revert` to ensure it works
+6. **Never modify existing migrations** that have been applied to production
 
 ## Next Development Steps
 

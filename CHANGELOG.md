@@ -2,7 +2,7 @@
 
 All notable changes to Sentinel Discord Bot will be documented in this file.
 
-## [Unreleased] - 2025-06-11
+## [Unreleased] - 2025-06-12
 
 ### Added
 - **Global Community Watchlist** - Collaborative watchlist with voting system
@@ -106,6 +106,15 @@ All notable changes to Sentinel Discord Bot will be documented in this file.
   - Directory created automatically on startup
   - Memes directory excluded from version control (except README.md)
 
+### Added (continued)
+- **Database Migration System** - Implemented sqlx migrations for schema management
+  - Replaced manual table creation with versioned migration files
+  - Added `migrations/` directory with initial schema migration
+  - Includes both up and down migrations for rollback capability
+  - Migration status tracking with `_sqlx_migrations` table
+  - Updated documentation with migration commands and best practices
+  - Build scripts now include migration deployment instructions
+
 ### Changed
 - **Migrated all commands to Discord slash commands** - Modern Discord integration
   - `/help` - Shows available commands with permission-based visibility
@@ -116,6 +125,16 @@ All notable changes to Sentinel Discord Bot will be documented in this file.
   - `/whitelist` - Manage command whitelist (super users only)
   - `/snort` - Fun command with global counter
   - Legacy DM commands still supported for backward compatibility
+
+### Fixed
+- **Database Schema Inconsistencies** - Aligned table and column names
+  - Fixed `system_settings` vs `settings` table name mismatch
+  - Corrected `nickname_logs` vs `member_nickname_logs` table name
+  - Fixed `channel_scan_history` vs `channel_scan_status` table name
+  - Aligned `cached_at` vs `downloaded_at` column in message_attachments
+  - Fixed member_status_logs structure to match actual usage
+  - Corrected vote type ENUM values in global_watchlist_votes
+  - Added missing `actor_id` column to channel_logs table
 
 ## [0.1.0] - 2025-06-09
 

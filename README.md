@@ -13,6 +13,12 @@ cd sentinel
 echo "DISCORD_TOKEN=your_bot_token_here" > .env
 echo "DATABASE_URL=mysql://root:password@localhost/sentinel" >> .env
 
+# Install sqlx-cli (one time only)
+cargo install sqlx-cli --no-default-features --features mysql
+
+# Run database migrations
+sqlx migrate run
+
 # Run the bot
 cargo run
 ```
@@ -64,7 +70,22 @@ cargo run
    # DATABASE_URL=mysql://user:password@localhost/sentinel
    ```
 
-3. **Build and Run**
+3. **Install Dependencies**
+   ```bash
+   # Install sqlx-cli for database migrations
+   cargo install sqlx-cli --no-default-features --features mysql
+   ```
+
+4. **Run Database Migrations**
+   ```bash
+   # Apply all database migrations
+   sqlx migrate run
+   
+   # Check migration status
+   sqlx migrate info
+   ```
+
+5. **Build and Run**
    ```bash
    cargo build --release
    cargo run
@@ -235,6 +256,12 @@ cargo fmt       # Format code
 cargo clippy    # Run linter
 cargo test      # Run tests
 cargo doc --open # Generate documentation
+
+# Database migrations
+sqlx migrate run         # Apply pending migrations
+sqlx migrate revert      # Revert last migration
+sqlx migrate info        # Show migration status
+sqlx migrate add <name>  # Create new migration
 ```
 
 ## Cross-Compilation for Raspberry Pi 5
@@ -277,11 +304,18 @@ scp target/aarch64-unknown-linux-gnu/release/sentinel pi@<your-pi-ip>:~/
 # Or if using Docker build:
 scp sentinel-pi5 pi@<your-pi-ip>:~/sentinel
 
-# Copy the environment file
+# Copy the environment file and migrations
 scp .env pi@<your-pi-ip>:~/
+scp -r migrations pi@<your-pi-ip>:~/
 
 # SSH to your Pi
 ssh pi@<your-pi-ip>
+
+# Install sqlx-cli on the Pi (if not already installed)
+cargo install sqlx-cli --no-default-features --features mysql
+
+# Run database migrations
+sqlx migrate run
 
 # Make executable and run
 chmod +x sentinel
