@@ -33,6 +33,13 @@ Key features include:
 ```bash
 # Set up environment
 echo "DISCORD_TOKEN=your_bot_token_here" > .env
+echo "DATABASE_URL=mysql://root:password@localhost/sentinel" >> .env
+
+# Install sqlx-cli (if not already installed)
+cargo install sqlx-cli --no-default-features --features mysql
+
+# Run database migrations
+sqlx migrate run
 
 # Run the bot
 cargo run
@@ -53,6 +60,12 @@ cargo fmt                # Format code
 cargo clippy             # Run linter
 cargo test               # Run tests
 cargo doc --open         # Generate and view documentation
+
+# Database commands
+sqlx migrate run         # Apply pending migrations
+sqlx migrate revert      # Revert last migration
+sqlx migrate info        # Show migration status
+sqlx migrate add <name>  # Create new migration
 ```
 
 ---
@@ -73,6 +86,14 @@ cargo doc --open         # Generate and view documentation
 - **User Tracking**: All server users stored in `users`, updated daily
 - **DM Commands**: `/kick`, `/ban`, `/timeout`, `/help` parsed from private messages
 - **Whitelist Enforcement**: Moderation commands allowed only for `command_whitelist` users
+
+### Database Migrations
+
+The project uses sqlx migrations for database schema management:
+- Migrations are stored in the `migrations/` directory
+- Each migration has an up (`.sql`) and down (`.down.sql`) file
+- Migrations are automatically applied when calling `db.run_migrations()`
+- The initial schema migration creates all necessary tables and indexes
 
 ---
 
