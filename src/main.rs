@@ -84,8 +84,8 @@ impl Handler {
             }
         }
 
-        // Get list of image files
-        let valid_extensions = ["jpg", "jpeg", "png", "gif", "webp"];
+        // Get list of meme files (images and videos)
+        let valid_extensions = ["jpg", "jpeg", "png", "gif", "webp", "mp4"];
         let mut entries = match tokio::fs::read_dir(memes_dir).await {
             Ok(entries) => entries,
             Err(e) => {
@@ -94,7 +94,7 @@ impl Handler {
             }
         };
 
-        let mut image_files = Vec::new();
+        let mut meme_files = Vec::new();
         while let Ok(Some(entry)) = entries.next_entry().await {
             let path = entry.path();
             if path.is_file() {
@@ -102,20 +102,20 @@ impl Handler {
                     if valid_extensions
                         .contains(&extension.to_str().unwrap_or("").to_lowercase().as_str())
                     {
-                        image_files.push(path);
+                        meme_files.push(path);
                     }
                 }
             }
         }
 
-        if image_files.is_empty() {
-            info!("No meme images found in memes/snort directory");
+        if meme_files.is_empty() {
+            info!("No meme files found in memes/snort directory");
             return None;
         }
 
-        // Select random image
+        // Select random meme file
         use rand::seq::SliceRandom;
-        image_files.choose(&mut rand::thread_rng()).cloned()
+        meme_files.choose(&mut rand::thread_rng()).cloned()
     }
 
     async fn handle_help_slash(&self, ctx: &Context, command: &serenity::all::CommandInteraction) {
@@ -3481,7 +3481,7 @@ impl EventHandler for Handler {
                                         let filename = meme_path
                                             .file_name()
                                             .and_then(|name| name.to_str())
-                                            .unwrap_or("snort_meme.png");
+                                            .unwrap_or("snort_meme");
 
                                         let attachment =
                                             CreateAttachment::bytes(file_contents, filename);
