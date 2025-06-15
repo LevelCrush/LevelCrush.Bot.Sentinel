@@ -13,10 +13,11 @@ use serenity::all::{
 };
 use serenity::async_trait;
 use serenity::client::Client;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 mod commands;
 mod db;
+mod giphy;
 mod jobs;
 mod media;
 mod media_detector;
@@ -24,6 +25,12 @@ mod media_detector;
 use commands::CommandHandler;
 use db::Database;
 use media::MediaCache;
+
+enum SnortMemeSource {
+    Local(std::path::PathBuf),
+    Giphy(giphy::GiphyGif),
+    None,
+}
 
 struct Handler {
     db: Database,
@@ -116,6 +123,144 @@ impl Handler {
         // Select random meme file
         use rand::seq::SliceRandom;
         meme_files.choose(&mut rand::thread_rng()).cloned()
+    }
+
+    async fn get_snort_meme_source(&self) -> SnortMemeSource {
+        // Get the last used meme ID to avoid repeats
+        let last_meme_id = self.db.get_last_snort_meme().await.unwrap_or(None);
+
+        // Random chance: 60% GIPHY, 40% local (when both are available)
+        let use_giphy = rand::random::<f32>() < 0.6;
+
+        // Try the preferred source first
+        if use_giphy && env::var("GIPHY_API_KEY").is_ok() {
+            if let Some(gif) = self.try_giphy_source(&last_meme_id).await {
+                return gif;
+            }
+        }
+
+        // Try local memes
+        if let Some(local) = self.try_local_source(&last_meme_id).await {
+            return local;
+        }
+
+        // If preferred didn't work, try the other source
+        if !use_giphy && env::var("GIPHY_API_KEY").is_ok() {
+            if let Some(gif) = self.try_giphy_source(&last_meme_id).await {
+                return gif;
+            }
+        }
+
+        SnortMemeSource::None
+    }
+
+    async fn try_giphy_source(&self, last_meme_id: &Option<String>) -> Option<SnortMemeSource> {
+        match giphy::GiphyClient::new(self.db.clone()) {
+            Ok(giphy_client) => {
+                // Extract just the GIF ID if last meme was from GIPHY
+                let exclude_id = last_meme_id
+                    .as_ref()
+                    .filter(|id| id.starts_with("giphy:"))
+                    .map(|id| &id[6..]); // Skip "giphy:" prefix
+
+                match giphy_client.get_random_with_cache(exclude_id).await {
+                    Ok(Some(gif)) => {
+                        info!("Using GIPHY meme: {}", gif.title);
+                        // Store the meme ID with prefix
+                        let meme_id = format!("giphy:{}", gif.id);
+                        if let Err(e) = self.db.set_last_snort_meme(&meme_id).await {
+                            warn!("Failed to save last snort meme ID: {}", e);
+                        }
+                        Some(SnortMemeSource::Giphy(gif))
+                    }
+                    Ok(None) => {
+                        info!("No GIPHY results available");
+                        None
+                    }
+                    Err(e) => {
+                        warn!("Failed to get GIPHY meme: {}", e);
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Failed to create GIPHY client: {}", e);
+                None
+            }
+        }
+    }
+
+    async fn try_local_source(&self, last_meme_id: &Option<String>) -> Option<SnortMemeSource> {
+        let memes_dir = Path::new("memes/snort");
+
+        // Get all available meme files
+        let valid_extensions = ["jpg", "jpeg", "png", "gif", "webp", "mp4"];
+        let mut entries = match tokio::fs::read_dir(memes_dir).await {
+            Ok(entries) => entries,
+            Err(_) => return None,
+        };
+
+        let mut meme_files = Vec::new();
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            if path.is_file() {
+                if let Some(extension) = path.extension() {
+                    if valid_extensions
+                        .contains(&extension.to_str().unwrap_or("").to_lowercase().as_str())
+                    {
+                        meme_files.push(path);
+                    }
+                }
+            }
+        }
+
+        if meme_files.is_empty() {
+            return None;
+        }
+
+        // Filter out the last used local meme if applicable
+        let should_filter = if let Some(last_id) = last_meme_id {
+            last_id.starts_with("local:")
+        } else {
+            false
+        };
+
+        let last_filename = if should_filter {
+            last_meme_id.as_ref().map(|id| &id[6..])
+        } else {
+            None
+        };
+
+        // If we have more than one file and should filter, remove the last used one
+        let files_to_choose = if should_filter && meme_files.len() > 1 {
+            meme_files
+                .iter()
+                .filter(|p| p.file_name().and_then(|n| n.to_str()) != last_filename)
+                .cloned()
+                .collect()
+        } else {
+            meme_files
+        };
+
+        // Select random meme file before async operations
+        use rand::seq::SliceRandom;
+        let selected_path = {
+            let mut rng = rand::thread_rng();
+            files_to_choose.choose(&mut rng).cloned()
+        };
+
+        if let Some(path) = selected_path {
+            // Store the meme ID with prefix
+            if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
+                let meme_id = format!("local:{}", filename);
+                if let Err(e) = self.db.set_last_snort_meme(&meme_id).await {
+                    warn!("Failed to save last snort meme ID: {}", e);
+                }
+            }
+            Some(SnortMemeSource::Local(path))
+        } else {
+            None
+        }
     }
 
     async fn handle_help_slash(&self, ctx: &Context, command: &serenity::all::CommandInteraction) {
@@ -1202,7 +1347,8 @@ impl Handler {
                         .map(|d| d as i32)
                         .unwrap_or(30);
 
-                    self.handle_watchlist_export(ctx, command, data_type, format, days).await;
+                    self.handle_watchlist_export(ctx, command, data_type, format, days)
+                        .await;
                 }
             }
             _ => {
@@ -1274,7 +1420,6 @@ impl Handler {
         }
     }
 
-
     async fn handle_global_slash(
         &self,
         ctx: &Context,
@@ -1299,7 +1444,9 @@ impl Handler {
 
         match subcommand.as_str() {
             "view" => {
-                let media_type = if let serenity::all::CommandDataOptionValue::SubCommand(opts) = subcommand_value {
+                let media_type = if let serenity::all::CommandDataOptionValue::SubCommand(opts) =
+                    subcommand_value
+                {
                     opts.iter()
                         .find(|o| o.name == "type")
                         .and_then(|o| o.value.as_str())
@@ -1312,10 +1459,22 @@ impl Handler {
                     Ok(items) if !items.is_empty() => {
                         let mut embed = CreateEmbed::new()
                             .title("🌍 Global Community Watchlist")
-                            .description("Vote on items to help prioritize what the community should watch!")
+                            .description(
+                                "Vote on items to help prioritize what the community should watch!",
+                            )
                             .colour(Colour::GOLD);
 
-                        for (id, media_type, title, url, description, upvotes, downvotes, added_by) in items.iter().take(10) {
+                        for (
+                            id,
+                            media_type,
+                            title,
+                            url,
+                            description,
+                            upvotes,
+                            downvotes,
+                            added_by,
+                        ) in items.iter().take(10)
+                        {
                             let net_votes = upvotes - downvotes;
                             let emoji = match media_type.as_str() {
                                 "anime" => "🎌",
@@ -1344,7 +1503,7 @@ impl Handler {
                         }
 
                         embed = embed.footer(serenity::all::CreateEmbedFooter::new(
-                            "Use /global vote <id> to vote on items"
+                            "Use /global vote <id> to vote on items",
                         ));
 
                         let response = CreateInteractionResponse::Message(
@@ -1439,11 +1598,7 @@ impl Handler {
                         .map(|id| id as u64)
                         .unwrap_or(0);
 
-                    let item_title = item_value
-                        .split(':')
-                        .skip(1)
-                        .collect::<Vec<_>>()
-                        .join(":");
+                    let item_title = item_value.split(':').skip(1).collect::<Vec<_>>().join(":");
 
                     let vote_action = opts
                         .iter()
@@ -1463,7 +1618,11 @@ impl Handler {
 
                     let result = match vote_action {
                         "remove" => self.db.remove_vote_global_watchlist(item_id, user_id).await,
-                        vote_type => self.db.vote_global_watchlist(item_id, user_id, vote_type).await.map(|_| true),
+                        vote_type => self
+                            .db
+                            .vote_global_watchlist(item_id, user_id, vote_type)
+                            .await
+                            .map(|_| true),
                     };
 
                     match result {
@@ -1494,7 +1653,9 @@ impl Handler {
                             error!("Failed to process vote: {}", e);
                             let response = CreateInteractionResponse::Message(
                                 CreateInteractionResponseMessage::new()
-                                    .content("Failed to process your vote. The item might not exist.")
+                                    .content(
+                                        "Failed to process your vote. The item might not exist.",
+                                    )
                                     .ephemeral(true),
                             );
                             command.create_response(&ctx.http, response).await.ok();
@@ -1516,7 +1677,17 @@ impl Handler {
                                 .title(format!("🔍 Search Results for \"{}\"", query))
                                 .colour(Colour::BLUE);
 
-                            for (id, media_type, title, url, description, upvotes, downvotes, added_by) in items {
+                            for (
+                                id,
+                                media_type,
+                                title,
+                                url,
+                                description,
+                                upvotes,
+                                downvotes,
+                                added_by,
+                            ) in items
+                            {
                                 let net_votes = upvotes - downvotes;
                                 let emoji = match media_type.as_str() {
                                     "anime" => "🎌",
@@ -1618,45 +1789,39 @@ impl Handler {
 
         // Generate the export content
         let export_content = match data_type {
-            "watchlist" => {
-                match self.db.get_user_watchlist_full(user_id).await {
-                    Ok(items) => self.generate_watchlist_export(items, format),
-                    Err(e) => {
-                        error!("Failed to get watchlist for export: {}", e);
-                        let followup = serenity::all::CreateInteractionResponseFollowup::new()
-                            .content("❌ Failed to retrieve watchlist data.")
-                            .ephemeral(true);
-                        command.create_followup(&ctx.http, followup).await.ok();
-                        return;
-                    }
+            "watchlist" => match self.db.get_user_watchlist_full(user_id).await {
+                Ok(items) => self.generate_watchlist_export(items, format),
+                Err(e) => {
+                    error!("Failed to get watchlist for export: {}", e);
+                    let followup = serenity::all::CreateInteractionResponseFollowup::new()
+                        .content("❌ Failed to retrieve watchlist data.")
+                        .ephemeral(true);
+                    command.create_followup(&ctx.http, followup).await.ok();
+                    return;
                 }
-            }
-            "recommendations" => {
-                match self.db.get_user_recommendations(days).await {
-                    Ok(items) => self.generate_recommendations_export(items, format, days),
-                    Err(e) => {
-                        error!("Failed to get recommendations for export: {}", e);
-                        let followup = serenity::all::CreateInteractionResponseFollowup::new()
-                            .content("❌ Failed to retrieve recommendations data.")
-                            .ephemeral(true);
-                        command.create_followup(&ctx.http, followup).await.ok();
-                        return;
-                    }
+            },
+            "recommendations" => match self.db.get_user_recommendations(days).await {
+                Ok(items) => self.generate_recommendations_export(items, format, days),
+                Err(e) => {
+                    error!("Failed to get recommendations for export: {}", e);
+                    let followup = serenity::all::CreateInteractionResponseFollowup::new()
+                        .content("❌ Failed to retrieve recommendations data.")
+                        .ephemeral(true);
+                    command.create_followup(&ctx.http, followup).await.ok();
+                    return;
                 }
-            }
-            "global" => {
-                match self.db.get_global_watchlist(100, None).await {
-                    Ok(items) => self.generate_global_export(items, format),
-                    Err(e) => {
-                        error!("Failed to get global watchlist for export: {}", e);
-                        let followup = serenity::all::CreateInteractionResponseFollowup::new()
-                            .content("❌ Failed to retrieve global watchlist data.")
-                            .ephemeral(true);
-                        command.create_followup(&ctx.http, followup).await.ok();
-                        return;
-                    }
+            },
+            "global" => match self.db.get_global_watchlist(100, None).await {
+                Ok(items) => self.generate_global_export(items, format),
+                Err(e) => {
+                    error!("Failed to get global watchlist for export: {}", e);
+                    let followup = serenity::all::CreateInteractionResponseFollowup::new()
+                        .content("❌ Failed to retrieve global watchlist data.")
+                        .ephemeral(true);
+                    command.create_followup(&ctx.http, followup).await.ok();
+                    return;
                 }
-            }
+            },
             _ => {
                 let followup = serenity::all::CreateInteractionResponseFollowup::new()
                     .content("❌ Invalid export type.")
@@ -1674,10 +1839,8 @@ impl Handler {
             format
         );
 
-        let attachment = serenity::all::CreateAttachment::bytes(
-            export_content.as_bytes(),
-            filename.clone(),
-        );
+        let attachment =
+            serenity::all::CreateAttachment::bytes(export_content.as_bytes(), filename.clone());
 
         // Send the export as a file attachment
         let description = match data_type {
@@ -1685,7 +1848,7 @@ impl Handler {
             "global" => "global community watchlist".to_string(),
             _ => format!("recommendations from the last {} days", days),
         };
-        
+
         let followup = serenity::all::CreateInteractionResponseFollowup::new()
             .content(format!(
                 "✅ Export complete! Here's your {} in {} format:",
@@ -1700,7 +1863,10 @@ impl Handler {
             let error_followup = serenity::all::CreateInteractionResponseFollowup::new()
                 .content("❌ Failed to send export file. The data might be too large.")
                 .ephemeral(true);
-            command.create_followup(&ctx.http, error_followup).await.ok();
+            command
+                .create_followup(&ctx.http, error_followup)
+                .await
+                .ok();
         }
     }
 
@@ -1739,22 +1905,30 @@ impl Handler {
                         })
                     })
                     .collect();
-                
+
                 serde_json::to_string_pretty(&serde_json::json!({
                     "watchlist": json_items,
                     "exported_at": chrono::Utc::now().to_rfc3339()
-                })).unwrap_or_else(|_| "[]".to_string())
+                }))
+                .unwrap_or_else(|_| "[]".to_string())
             }
             "markdown" => {
                 let mut md = String::from("# My Media Watchlist\n\n");
-                md.push_str(&format!("*Exported on {}*\n\n", chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")));
-                
+                md.push_str(&format!(
+                    "*Exported on {}*\n\n",
+                    chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")
+                ));
+
                 // Group by media type
-                let mut grouped: std::collections::HashMap<String, Vec<_>> = std::collections::HashMap::new();
+                let mut grouped: std::collections::HashMap<String, Vec<_>> =
+                    std::collections::HashMap::new();
                 for item in items {
-                    grouped.entry(item.0.clone()).or_insert_with(Vec::new).push(item);
+                    grouped
+                        .entry(item.0.clone())
+                        .or_insert_with(Vec::new)
+                        .push(item);
                 }
-                
+
                 for (media_type, items) in grouped {
                     let emoji = match media_type.as_str() {
                         "anime" => "🎌",
@@ -1765,13 +1939,20 @@ impl Handler {
                         "music" => "🎵",
                         _ => "📋",
                     };
-                    
-                    md.push_str(&format!("\n## {} {}\n\n", emoji, self.capitalize(&media_type.replace('_', " "))));
-                    
+
+                    md.push_str(&format!(
+                        "\n## {} {}\n\n",
+                        emoji,
+                        self.capitalize(&media_type.replace('_', " "))
+                    ));
+
                     for (_, title, url, priority, status, notes) in items {
                         md.push_str(&format!("### {}\n", title));
                         md.push_str(&format!("- **Priority**: {}/100\n", priority));
-                        md.push_str(&format!("- **Status**: {}\n", self.capitalize(&status.replace('_', " "))));
+                        md.push_str(&format!(
+                            "- **Status**: {}\n",
+                            self.capitalize(&status.replace('_', " "))
+                        ));
                         if let Some(url) = url {
                             md.push_str(&format!("- **Link**: [{}]({})\n", url, url));
                         }
@@ -1783,10 +1964,10 @@ impl Handler {
                         md.push('\n');
                     }
                 }
-                
+
                 md
             }
-            _ => String::new()
+            _ => String::new(),
         }
     }
 
@@ -1826,24 +2007,32 @@ impl Handler {
                         })
                     })
                     .collect();
-                
+
                 serde_json::to_string_pretty(&serde_json::json!({
                     "recommendations": json_items,
                     "period_days": days,
                     "exported_at": chrono::Utc::now().to_rfc3339()
-                })).unwrap_or_else(|_| "[]".to_string())
+                }))
+                .unwrap_or_else(|_| "[]".to_string())
             }
             "markdown" => {
                 let mut md = String::from("# Media Recommendations\n\n");
                 md.push_str(&format!("*Based on the last {} days of activity*\n", days));
-                md.push_str(&format!("*Exported on {}*\n\n", chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")));
-                
+                md.push_str(&format!(
+                    "*Exported on {}*\n\n",
+                    chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")
+                ));
+
                 // Group by media type
-                let mut grouped: std::collections::HashMap<String, Vec<_>> = std::collections::HashMap::new();
+                let mut grouped: std::collections::HashMap<String, Vec<_>> =
+                    std::collections::HashMap::new();
                 for item in items {
-                    grouped.entry(item.0.clone()).or_insert_with(Vec::new).push(item);
+                    grouped
+                        .entry(item.0.clone())
+                        .or_insert_with(Vec::new)
+                        .push(item);
                 }
-                
+
                 for (media_type, items) in grouped {
                     let emoji = match media_type.as_str() {
                         "anime" => "🎌",
@@ -1854,12 +2043,20 @@ impl Handler {
                         "music" => "🎵",
                         _ => "📋",
                     };
-                    
-                    md.push_str(&format!("\n## {} {}\n\n", emoji, self.capitalize(&media_type.replace('_', " "))));
-                    
+
+                    md.push_str(&format!(
+                        "\n## {} {}\n\n",
+                        emoji,
+                        self.capitalize(&media_type.replace('_', " "))
+                    ));
+
                     for (_, title, url, confidence, mentions, users) in items {
                         md.push_str(&format!("### {}\n", title));
-                        md.push_str(&format!("- **Mentioned**: {} time{}\n", mentions, if mentions == 1 { "" } else { "s" }));
+                        md.push_str(&format!(
+                            "- **Mentioned**: {} time{}\n",
+                            mentions,
+                            if mentions == 1 { "" } else { "s" }
+                        ));
                         md.push_str(&format!("- **Confidence**: {:.0}%\n", confidence * 100.0));
                         if let Some(url) = url {
                             md.push_str(&format!("- **Link**: [{}]({})\n", url, url));
@@ -1870,10 +2067,10 @@ impl Handler {
                         md.push('\n');
                     }
                 }
-                
+
                 md
             }
-            _ => String::new()
+            _ => String::new(),
         }
     }
 
@@ -1895,13 +2092,25 @@ impl Handler {
 
     fn generate_global_export(
         &self,
-        items: Vec<(i32, String, String, Option<String>, Option<String>, i64, i64, String)>,
+        items: Vec<(
+            i32,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            i64,
+            i64,
+            String,
+        )>,
         format: &str,
     ) -> String {
         match format {
             "csv" => {
-                let mut csv = String::from("ID,Type,Title,URL,Description,Upvotes,Downvotes,Net Votes,Added By\n");
-                for (id, media_type, title, url, description, upvotes, downvotes, added_by) in items {
+                let mut csv = String::from(
+                    "ID,Type,Title,URL,Description,Upvotes,Downvotes,Net Votes,Added By\n",
+                );
+                for (id, media_type, title, url, description, upvotes, downvotes, added_by) in items
+                {
                     let net_votes = upvotes - downvotes;
                     csv.push_str(&format!(
                         "{},{},{},{},{},{},{},{},{}\n",
@@ -1921,38 +2130,58 @@ impl Handler {
             "json" => {
                 let json_items: Vec<serde_json::Value> = items
                     .into_iter()
-                    .map(|(id, media_type, title, url, description, upvotes, downvotes, added_by)| {
-                        serde_json::json!({
-                            "id": id,
-                            "type": media_type,
-                            "title": title,
-                            "url": url,
-                            "description": description,
-                            "upvotes": upvotes,
-                            "downvotes": downvotes,
-                            "net_votes": upvotes - downvotes,
-                            "added_by": added_by
-                        })
-                    })
+                    .map(
+                        |(
+                            id,
+                            media_type,
+                            title,
+                            url,
+                            description,
+                            upvotes,
+                            downvotes,
+                            added_by,
+                        )| {
+                            serde_json::json!({
+                                "id": id,
+                                "type": media_type,
+                                "title": title,
+                                "url": url,
+                                "description": description,
+                                "upvotes": upvotes,
+                                "downvotes": downvotes,
+                                "net_votes": upvotes - downvotes,
+                                "added_by": added_by
+                            })
+                        },
+                    )
                     .collect();
-                
+
                 serde_json::to_string_pretty(&serde_json::json!({
                     "global_watchlist": json_items,
                     "exported_at": chrono::Utc::now().to_rfc3339()
-                })).unwrap_or_else(|_| "[]".to_string())
+                }))
+                .unwrap_or_else(|_| "[]".to_string())
             }
             "markdown" => {
                 let mut md = String::from("# Global Community Watchlist\n\n");
-                md.push_str(&format!("*Exported on {}*\n\n", chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")));
-                
+                md.push_str(&format!(
+                    "*Exported on {}*\n\n",
+                    chrono::Utc::now().format("%Y-%m-%d %H:%M UTC")
+                ));
+
                 // Group by media type
-                let mut grouped: std::collections::HashMap<String, Vec<_>> = std::collections::HashMap::new();
+                let mut grouped: std::collections::HashMap<String, Vec<_>> =
+                    std::collections::HashMap::new();
                 for item in items {
-                    grouped.entry(item.1.clone()).or_insert_with(Vec::new).push(item);
+                    grouped
+                        .entry(item.1.clone())
+                        .or_insert_with(Vec::new)
+                        .push(item);
                 }
-                
+
                 // Sort groups by total net votes
-                let mut sorted_groups: Vec<_> = grouped.into_iter()
+                let mut sorted_groups: Vec<_> = grouped
+                    .into_iter()
                     .map(|(media_type, mut items)| {
                         // Sort items within group by net votes
                         items.sort_by_key(|(_, _, _, _, _, up, down, _)| -(up - down));
@@ -1960,9 +2189,12 @@ impl Handler {
                     })
                     .collect();
                 sorted_groups.sort_by_key(|(_, items)| {
-                    -items.iter().map(|(_, _, _, _, _, up, down, _)| up - down).sum::<i64>()
+                    -items
+                        .iter()
+                        .map(|(_, _, _, _, _, up, down, _)| up - down)
+                        .sum::<i64>()
                 });
-                
+
                 for (media_type, items) in sorted_groups {
                     let emoji = match media_type.as_str() {
                         "anime" => "🎌",
@@ -1973,13 +2205,20 @@ impl Handler {
                         "music" => "🎵",
                         _ => "📋",
                     };
-                    
-                    md.push_str(&format!("\n## {} {}\n\n", emoji, self.capitalize(&media_type.replace('_', " "))));
-                    
+
+                    md.push_str(&format!(
+                        "\n## {} {}\n\n",
+                        emoji,
+                        self.capitalize(&media_type.replace('_', " "))
+                    ));
+
                     for (id, _, title, url, description, upvotes, downvotes, added_by) in items {
                         let net_votes = upvotes - downvotes;
                         md.push_str(&format!("### {} (ID: {})\n", title, id));
-                        md.push_str(&format!("- **Votes**: 👍 {} | 👎 {} | **Net: {}**\n", upvotes, downvotes, net_votes));
+                        md.push_str(&format!(
+                            "- **Votes**: 👍 {} | 👎 {} | **Net: {}**\n",
+                            upvotes, downvotes, net_votes
+                        ));
                         md.push_str(&format!("- **Added by**: {}\n", added_by));
                         if let Some(desc) = description {
                             if !desc.is_empty() {
@@ -1992,15 +2231,15 @@ impl Handler {
                         md.push('\n');
                     }
                 }
-                
+
                 md
             }
-            _ => String::new()
+            _ => String::new(),
         }
     }
 
     async fn handle_super_user_media_attachments(&self, ctx: &Context, msg: &Message) {
-        use serenity::all::{CreateMessage, CreateActionRow, CreateButton, ButtonStyle};
+        use serenity::all::{ButtonStyle, CreateActionRow, CreateButton, CreateMessage};
 
         info!(
             "[SUPER USER MEDIA] {} sent {} attachment(s)",
@@ -2014,7 +2253,9 @@ impl Handler {
         // Process each attachment
         for attachment in &msg.attachments {
             // Skip Zone.Identifier files
-            if attachment.filename.ends_with(":Zone.Identifier") || attachment.filename == "Zone.Identifier" {
+            if attachment.filename.ends_with(":Zone.Identifier")
+                || attachment.filename == "Zone.Identifier"
+            {
                 continue;
             }
 
@@ -2044,14 +2285,15 @@ impl Handler {
             let mut current_row = Vec::new();
 
             for (i, folder) in meme_folders.iter().enumerate() {
-                if i >= 25 { // Max 25 buttons total
+                if i >= 25 {
+                    // Max 25 buttons total
                     break;
                 }
 
                 let button = CreateButton::new(format!("meme_folder_{}", folder))
                     .label(folder)
                     .style(ButtonStyle::Primary);
-                
+
                 current_row.push(button);
 
                 // Create new row every 5 buttons
@@ -2069,8 +2311,7 @@ impl Handler {
             // Send message with buttons
             let message_content = format!(
                 "🎨 New meme from **{}**!\n**File:** {}\n\nSelect a folder to save to:",
-                msg.author.name,
-                attachment.filename
+                msg.author.name, attachment.filename
             );
 
             let builder = CreateMessage::new()
@@ -2106,7 +2347,10 @@ impl Handler {
                     error!("Failed to create button message for attachment: {}", e);
                     let _ = msg
                         .channel_id
-                        .say(&ctx.http, "❌ Failed to create selection buttons for this attachment")
+                        .say(
+                            &ctx.http,
+                            "❌ Failed to create selection buttons for this attachment",
+                        )
                         .await;
                 }
             }
@@ -2118,7 +2362,9 @@ impl Handler {
         ctx: &Context,
         component: serenity::all::ComponentInteraction,
     ) {
-        use serenity::all::{CreateInteractionResponse, CreateInteractionResponseFollowup, EditMessage};
+        use serenity::all::{
+            CreateInteractionResponse, CreateInteractionResponseFollowup, EditMessage,
+        };
 
         // Send immediate acknowledgment
         let response = CreateInteractionResponse::Acknowledge;
@@ -2147,7 +2393,11 @@ impl Handler {
             let _uploader_id = parts[2];
 
             // Extract folder name from custom_id
-            let folder_name = component.data.custom_id.strip_prefix("meme_folder_").unwrap_or("");
+            let folder_name = component
+                .data
+                .custom_id
+                .strip_prefix("meme_folder_")
+                .unwrap_or("");
 
             if folder_name.is_empty() {
                 error!("Invalid folder name in button custom_id");
@@ -2159,12 +2409,21 @@ impl Handler {
                 .content(format!("🎨 Processing meme: **{}**...", original_filename))
                 .components(vec![]); // Remove buttons
 
-            if let Err(e) = component.message.channel_id.edit_message(&ctx.http, component.message.id, edit_msg).await {
+            if let Err(e) = component
+                .message
+                .channel_id
+                .edit_message(&ctx.http, component.message.id, edit_msg)
+                .await
+            {
                 error!("Failed to update message: {}", e);
             }
 
             // Download and save the meme
-            let processing_key = format!("meme_processing_{}_{}", component.channel_id.get(), component.message.id.get());
+            let processing_key = format!(
+                "meme_processing_{}_{}",
+                component.channel_id.get(),
+                component.message.id.get()
+            );
             self.download_and_save_meme(
                 ctx,
                 &component.message,
@@ -2172,7 +2431,8 @@ impl Handler {
                 original_filename,
                 &[folder_name.to_string()],
                 &processing_key,
-            ).await;
+            )
+            .await;
 
             // Clean up the button data
             let _ = self.db.delete_setting(&button_key).await;
@@ -2210,13 +2470,21 @@ impl Handler {
                         .and_then(|e| e.to_str())
                         .or_else(|| {
                             // Try to get extension from URL if not in filename
-                            if url.contains(".jpg") || url.contains(".jpeg") { Some("jpg") }
-                            else if url.contains(".png") { Some("png") }
-                            else if url.contains(".gif") { Some("gif") }
-                            else if url.contains(".webp") { Some("webp") }
-                            else if url.contains(".mp4") { Some("mp4") }
-                            else if url.contains(".webm") { Some("webm") }
-                            else { Some("png") } // Default to png
+                            if url.contains(".jpg") || url.contains(".jpeg") {
+                                Some("jpg")
+                            } else if url.contains(".png") {
+                                Some("png")
+                            } else if url.contains(".gif") {
+                                Some("gif")
+                            } else if url.contains(".webp") {
+                                Some("webp")
+                            } else if url.contains(".mp4") {
+                                Some("mp4")
+                            } else if url.contains(".webm") {
+                                Some("webm")
+                            } else {
+                                Some("png")
+                            } // Default to png
                         })
                         .unwrap_or("png");
 
@@ -2316,7 +2584,6 @@ impl Handler {
         }
     }
 
-
     async fn get_meme_folders(&self) -> Vec<String> {
         use tokio::fs;
 
@@ -2374,41 +2641,42 @@ impl Handler {
                 if let Some(subcommand) = autocomplete.data.options.first() {
                     if subcommand.name == "vote" {
                         // Get the input for the item field from subcommand options
-                        let input = if let serenity::all::CommandDataOptionValue::SubCommand(sub_opts) = &subcommand.value {
-                            sub_opts
-                                .iter()
-                                .find(|opt| opt.name == "item")
-                                .and_then(|opt| opt.value.as_str())
-                                .unwrap_or("")
-                        } else {
-                            ""
-                        };
+                        let input =
+                            if let serenity::all::CommandDataOptionValue::SubCommand(sub_opts) =
+                                &subcommand.value
+                            {
+                                sub_opts
+                                    .iter()
+                                    .find(|opt| opt.name == "item")
+                                    .and_then(|opt| opt.value.as_str())
+                                    .unwrap_or("")
+                            } else {
+                                ""
+                            };
 
                         // Search global watchlist items
                         match self.db.search_global_watchlist(input, 25).await {
-                            Ok(items) => {
-                                items
-                                    .into_iter()
-                                    .map(|(id, media_type, title, _, _, upvotes, downvotes, _)| {
-                                        let net_votes = upvotes - downvotes;
-                                        let emoji = match media_type.as_str() {
-                                            "anime" => "🎌",
-                                            "tv_show" => "📺",
-                                            "movie" => "🎬",
-                                            "game" => "🎮",
-                                            "youtube" => "📹",
-                                            "music" => "🎵",
-                                            _ => "📋",
-                                        };
-                                        let display = format!(
-                                            "{} {} [{}] (Net: {})",
-                                            emoji, title, media_type, net_votes
-                                        );
-                                        let value = format!("{}:{}", id, title);
-                                        serenity::all::AutocompleteChoice::new(display, value)
-                                    })
-                                    .collect()
-                            }
+                            Ok(items) => items
+                                .into_iter()
+                                .map(|(id, media_type, title, _, _, upvotes, downvotes, _)| {
+                                    let net_votes = upvotes - downvotes;
+                                    let emoji = match media_type.as_str() {
+                                        "anime" => "🎌",
+                                        "tv_show" => "📺",
+                                        "movie" => "🎬",
+                                        "game" => "🎮",
+                                        "youtube" => "📹",
+                                        "music" => "🎵",
+                                        _ => "📋",
+                                    };
+                                    let display = format!(
+                                        "{} {} [{}] (Net: {})",
+                                        emoji, title, media_type, net_votes
+                                    );
+                                    let value = format!("{}:{}", id, title);
+                                    serenity::all::AutocompleteChoice::new(display, value)
+                                })
+                                .collect(),
                             Err(e) => {
                                 error!("Failed to search global watchlist for autocomplete: {}", e);
                                 vec![]
@@ -3476,18 +3744,43 @@ impl EventHandler for Handler {
 
                             // Add random meme only if we should (counter was incremented)
                             if should_attach_meme {
-                                if let Some(meme_path) = Self::get_random_snort_meme().await {
-                                    if let Ok(file_contents) = tokio::fs::read(&meme_path).await {
-                                        let filename = meme_path
-                                            .file_name()
-                                            .and_then(|name| name.to_str())
-                                            .unwrap_or("snort_meme");
+                                match self.get_snort_meme_source().await {
+                                    SnortMemeSource::Local(meme_path) => {
+                                        if let Ok(file_contents) = tokio::fs::read(&meme_path).await
+                                        {
+                                            let filename = meme_path
+                                                .file_name()
+                                                .and_then(|name| name.to_str())
+                                                .unwrap_or("snort_meme");
 
-                                        let attachment =
-                                            CreateAttachment::bytes(file_contents, filename);
-                                        response_message = response_message.add_file(attachment);
+                                            let attachment =
+                                                CreateAttachment::bytes(file_contents, filename);
+                                            response_message =
+                                                response_message.add_file(attachment);
 
-                                        info!("Attached snort meme: {}", meme_path.display());
+                                            info!(
+                                                "Attached local snort meme: {}",
+                                                meme_path.display()
+                                            );
+                                        }
+                                    }
+                                    SnortMemeSource::Giphy(gif) => {
+                                        // For GIPHY, we'll embed the GIF URL instead of downloading
+                                        let embed = CreateEmbed::new()
+                                            .image(&gif.images.original.url)
+                                            .title(&gif.title)
+                                            .footer(serenity::all::CreateEmbedFooter::new(
+                                                "Powered by GIPHY",
+                                            ));
+
+                                        response_message = response_message.embed(embed);
+                                        info!(
+                                            "Embedded GIPHY meme: {} - {}",
+                                            gif.title, gif.images.original.url
+                                        );
+                                    }
+                                    SnortMemeSource::None => {
+                                        info!("No meme source available for snort command");
                                     }
                                 }
                             }

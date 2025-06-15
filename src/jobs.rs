@@ -116,6 +116,23 @@ pub async fn start_background_jobs(
     })?;
 
     scheduler.add(media_scan_job).await?;
+
+    // GIPHY cache cleanup job - runs daily at 5 AM
+    let db_giphy_cleanup = db.clone();
+
+    let giphy_cleanup_job = Job::new_async("0 0 5 * * *", move |_uuid, _l| {
+        let db = db_giphy_cleanup.clone();
+        Box::pin(async move {
+            tokio::spawn(async move {
+                if let Err(e) = cleanup_old_giphy_cache(db).await {
+                    tracing::error!("Failed to cleanup old GIPHY cache: {}", e);
+                }
+            });
+        })
+    })?;
+
+    scheduler.add(giphy_cleanup_job).await?;
+
     scheduler.start().await?;
 
     info!("Background jobs started");
@@ -588,4 +605,25 @@ async fn scan_for_media_recommendations(db: Database) -> Result<()> {
     );
 
     Ok(())
+}
+
+async fn cleanup_old_giphy_cache(db: Database) -> Result<()> {
+    info!("Starting GIPHY cache cleanup job");
+
+    // Clean up cache entries that haven't been used in 7 days
+    const DAYS_OLD: i32 = 7;
+
+    match db.clean_old_giphy_cache(DAYS_OLD).await {
+        Ok(rows_deleted) => {
+            info!(
+                "Cleaned up {} old GIPHY cache entries (older than {} days)",
+                rows_deleted, DAYS_OLD
+            );
+            Ok(())
+        }
+        Err(e) => {
+            tracing::error!("Failed to clean GIPHY cache: {}", e);
+            Err(e)
+        }
+    }
 }

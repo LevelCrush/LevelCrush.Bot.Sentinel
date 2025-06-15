@@ -27,7 +27,6 @@ impl MediaDetector {
                 Regex::new(r"(?i)(?:anime\s+)?([A-Za-z0-9\s:\-!?']+?)\s+(?:season|S)\s*(\d+)").unwrap(),
                 Regex::new(r"(?i)([A-Za-z0-9\s:\-!?']+?)\s+ep(?:isode)?\s*\d+").unwrap(),
             ],
-            
             // TV show patterns
             tv_show_patterns: vec![
                 Regex::new(r"(?i)(?:watching|watched|recommend|check out|binged?)\s+(?:the\s+)?(?:show|series|season)\s+([A-Za-z0-9\s:\-!?']+?)(?:\s+(?:on|is|was)|[.!?,]|$)").unwrap(),
@@ -35,7 +34,6 @@ impl MediaDetector {
                 Regex::new(r"(?i)(?:just\s+)?(?:started|finished)\s+([A-Za-z0-9\s:\-!?']+?)\s+(?:season|S)\s*\d+").unwrap(),
                 Regex::new(r"(?i)([A-Za-z0-9\s:\-!?']+?)\s+(?:is|was)\s+(?:such\s+)?(?:a\s+)?(?:great|good|amazing|awesome)\s+(?:show|series)").unwrap(),
             ],
-            
             // Game patterns
             game_patterns: vec![
                 Regex::new(r"(?i)(?:playing|played|recommend|check out|love|enjoying)\s+(?:the\s+)?(?:game\s+)?([A-Za-z0-9\s:\-!?']+?)(?:\s+(?:is|was|it's|on)|[.!?,]|$)").unwrap(),
@@ -43,10 +41,8 @@ impl MediaDetector {
                 Regex::new(r"(?i)(?:got|bought|downloaded)\s+([A-Za-z0-9\s:\-!?']+?)\s+(?:on|from)\s+(?:Steam|Epic|Xbox|PlayStation|Switch)").unwrap(),
                 Regex::new(r"(?i)([A-Za-z0-9\s:\-!?']+?)\s+(?:gameplay|walkthrough|guide|review)").unwrap(),
             ],
-            
             // YouTube pattern
             youtube_pattern: Regex::new(r"(?i)(?:https?://)?(?:www\.)?(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/)([A-Za-z0-9_\-]+)").unwrap(),
-            
             // General URL pattern
             url_pattern: Regex::new(r#"https?://[^\s<>"{}|\\^`\[\]]+"#).unwrap(),
         }

@@ -19,10 +19,8 @@ impl Database {
 
     pub async fn run_migrations(&self) -> Result<()> {
         // Run sqlx migrations from the migrations directory
-        sqlx::migrate!("./migrations")
-            .run(&self.pool)
-            .await?;
-        
+        sqlx::migrate!("./migrations").run(&self.pool).await?;
+
         Ok(())
     }
 
@@ -307,11 +305,10 @@ impl Database {
     }
 
     pub async fn get_all_settings(&self) -> Result<Vec<(String, String)>> {
-        let settings: Vec<(String, String)> = sqlx::query_as(
-            "SELECT setting_key, setting_value FROM system_settings"
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let settings: Vec<(String, String)> =
+            sqlx::query_as("SELECT setting_key, setting_value FROM system_settings")
+                .fetch_all(&self.pool)
+                .await?;
 
         Ok(settings)
     }
@@ -1097,17 +1094,18 @@ impl Database {
         &self,
         user_id: u64,
     ) -> Result<Vec<(String, String, Option<String>, i32, String, Option<String>)>> {
-        let items: Vec<(String, String, Option<String>, i32, String, Option<String>)> = sqlx::query_as(
-            r#"
+        let items: Vec<(String, String, Option<String>, i32, String, Option<String>)> =
+            sqlx::query_as(
+                r#"
             SELECT media_type, title, url, priority, status, notes
             FROM user_watchlist
             WHERE user_id = ?
             ORDER BY priority DESC, updated_at DESC
             "#,
-        )
-        .bind(user_id as i64)
-        .fetch_all(&self.pool)
-        .await?;
+            )
+            .bind(user_id as i64)
+            .fetch_all(&self.pool)
+            .await?;
 
         Ok(items)
     }
@@ -1191,7 +1189,7 @@ impl Database {
         // Get the ID of the inserted/updated item
         if result.rows_affected() > 0 {
             let id: (i32,) = sqlx::query_as(
-                "SELECT id FROM global_watchlist WHERE media_type = ? AND title = ?"
+                "SELECT id FROM global_watchlist WHERE media_type = ? AND title = ?",
             )
             .bind(media_type)
             .bind(title)
@@ -1233,7 +1231,7 @@ impl Database {
         user_id: u64,
     ) -> Result<bool> {
         let result = sqlx::query(
-            "DELETE FROM global_watchlist_votes WHERE watchlist_id = ? AND user_id = ?"
+            "DELETE FROM global_watchlist_votes WHERE watchlist_id = ? AND user_id = ?",
         )
         .bind(watchlist_id as i32)
         .bind(user_id as i64)
@@ -1247,7 +1245,18 @@ impl Database {
         &self,
         limit: u32,
         media_type: Option<&str>,
-    ) -> Result<Vec<(i32, String, String, Option<String>, Option<String>, i64, i64, String)>> {
+    ) -> Result<
+        Vec<(
+            i32,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            i64,
+            i64,
+            String,
+        )>,
+    > {
         let query = if let Some(media_type) = media_type {
             sqlx::query_as(
                 r#"
@@ -1298,8 +1307,16 @@ impl Database {
             .bind(limit)
         };
 
-        let items: Vec<(i32, String, String, Option<String>, Option<String>, i64, i64, String)> = 
-            query.fetch_all(&self.pool).await?;
+        let items: Vec<(
+            i32,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            i64,
+            i64,
+            String,
+        )> = query.fetch_all(&self.pool).await?;
 
         Ok(items)
     }
@@ -1310,7 +1327,7 @@ impl Database {
         user_id: u64,
     ) -> Result<Option<String>> {
         let vote: Option<(String,)> = sqlx::query_as(
-            "SELECT vote_type FROM global_watchlist_votes WHERE watchlist_id = ? AND user_id = ?"
+            "SELECT vote_type FROM global_watchlist_votes WHERE watchlist_id = ? AND user_id = ?",
         )
         .bind(watchlist_id as i64)
         .bind(user_id as i64)
@@ -1324,7 +1341,18 @@ impl Database {
         &self,
         query: &str,
         limit: u32,
-    ) -> Result<Vec<(i32, String, String, Option<String>, Option<String>, i64, i64, String)>> {
+    ) -> Result<
+        Vec<(
+            i32,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+            i64,
+            i64,
+            String,
+        )>,
+    > {
         let search_pattern = format!("%{}%", query);
 
         let items: Vec<(i32, String, String, Option<String>, Option<String>, i64, i64, String)> = sqlx::query_as(
@@ -1411,5 +1439,183 @@ impl Database {
             event_interests_result.rows_affected(),
             event_updates_result.rows_affected(),
         ))
+    }
+
+    // GIPHY related functions
+    pub async fn get_active_giphy_search_terms(&self) -> Result<Vec<String>> {
+        let terms: Vec<(String,)> = sqlx::query_as(
+            "SELECT search_term FROM giphy_search_terms WHERE is_active = TRUE ORDER BY priority DESC, id ASC"
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(terms.into_iter().map(|(term,)| term).collect())
+    }
+
+    pub async fn get_cached_giphy_gif(
+        &self,
+        search_term: &str,
+        exclude_id: Option<&str>,
+    ) -> Result<Option<crate::giphy::GiphyGif>> {
+        // Get a random cached gif for the search term, excluding the last used one if provided
+        let result: Option<(String, String, String, String, i32, i32)> =
+            if let Some(exclude) = exclude_id {
+                sqlx::query_as(
+                    r#"
+                SELECT gif_id, gif_url, gif_title, gif_rating, width, height
+                FROM giphy_cache
+                WHERE search_term = ? AND gif_id != ?
+                ORDER BY RAND()
+                LIMIT 1
+                "#,
+                )
+                .bind(search_term)
+                .bind(exclude)
+                .fetch_optional(&self.pool)
+                .await?
+            } else {
+                sqlx::query_as(
+                    r#"
+                SELECT gif_id, gif_url, gif_title, gif_rating, width, height
+                FROM giphy_cache
+                WHERE search_term = ?
+                ORDER BY RAND()
+                LIMIT 1
+                "#,
+                )
+                .bind(search_term)
+                .fetch_optional(&self.pool)
+                .await?
+            };
+
+        if let Some((id, url, title, rating, width, height)) = result {
+            // Update last used time and increment use count
+            sqlx::query(
+                "UPDATE giphy_cache SET last_used = NOW(), use_count = use_count + 1 WHERE gif_id = ? AND search_term = ?"
+            )
+            .bind(&id)
+            .bind(search_term)
+            .execute(&self.pool)
+            .await?;
+
+            // Construct a GiphyGif object
+            let gif = crate::giphy::GiphyGif {
+                id,
+                title,
+                rating,
+                images: crate::giphy::GiphyImages {
+                    original: crate::giphy::GiphyImage {
+                        url,
+                        width: width.to_string(),
+                        height: height.to_string(),
+                        size: None,
+                    },
+                    fixed_height: crate::giphy::GiphyImage {
+                        url: String::new(),
+                        width: String::new(),
+                        height: String::new(),
+                        size: None,
+                    },
+                    fixed_width: crate::giphy::GiphyImage {
+                        url: String::new(),
+                        width: String::new(),
+                        height: String::new(),
+                        size: None,
+                    },
+                },
+            };
+
+            Ok(Some(gif))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub async fn cache_giphy_gif(
+        &self,
+        search_term: &str,
+        gif: &crate::giphy::GiphyGif,
+    ) -> Result<()> {
+        let width: i32 = gif.images.original.width.parse().unwrap_or(0);
+        let height: i32 = gif.images.original.height.parse().unwrap_or(0);
+        let file_size: Option<i64> = gif
+            .images
+            .original
+            .size
+            .as_ref()
+            .and_then(|s| s.parse().ok());
+
+        sqlx::query(
+            r#"
+            INSERT INTO giphy_cache (search_term, gif_id, gif_url, gif_title, gif_rating, width, height, file_size_bytes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE
+                gif_url = VALUES(gif_url),
+                gif_title = VALUES(gif_title),
+                gif_rating = VALUES(gif_rating),
+                width = VALUES(width),
+                height = VALUES(height),
+                file_size_bytes = VALUES(file_size_bytes),
+                cached_at = NOW()
+            "#
+        )
+        .bind(search_term)
+        .bind(&gif.id)
+        .bind(&gif.images.original.url)
+        .bind(&gif.title)
+        .bind(&gif.rating)
+        .bind(width)
+        .bind(height)
+        .bind(file_size)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn get_cache_size(&self, search_term: &str) -> Result<u32> {
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM giphy_cache WHERE search_term = ?")
+                .bind(search_term)
+                .fetch_one(&self.pool)
+                .await?;
+
+        Ok(count as u32)
+    }
+
+    pub async fn clean_old_giphy_cache(&self, days_old: i32) -> Result<u64> {
+        let cutoff = chrono::Utc::now() - chrono::Duration::days(days_old as i64);
+
+        let result = sqlx::query("DELETE FROM giphy_cache WHERE last_used < ?")
+            .bind(cutoff)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(result.rows_affected())
+    }
+
+    pub async fn get_last_snort_meme(&self) -> Result<Option<String>> {
+        let result: Option<(String,)> = sqlx::query_as(
+            "SELECT setting_value FROM system_settings WHERE setting_key = 'last_snort_meme'",
+        )
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(result.map(|(value,)| value))
+    }
+
+    pub async fn set_last_snort_meme(&self, meme_id: &str) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO system_settings (setting_key, setting_value)
+            VALUES ('last_snort_meme', ?)
+            ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)
+            "#,
+        )
+        .bind(meme_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
     }
 }
