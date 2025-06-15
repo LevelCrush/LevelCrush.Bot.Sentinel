@@ -86,6 +86,11 @@ sqlx migrate add <name>  # Create new migration
 - **User Tracking**: All server users stored in `users`, updated daily
 - **DM Commands**: `/kick`, `/ban`, `/timeout`, `/help` parsed from private messages
 - **Whitelist Enforcement**: Moderation commands allowed only for `command_whitelist` users
+- **GIPHY Integration**: Dedicated module (`giphy.rs`) for API interaction and caching
+  - `GiphyClient` manages API calls and database caching
+  - Smart source selection between local files and GIPHY
+  - Prevents back-to-back repeats using `SnortMemeSource` enum
+  - Graceful fallback handling when API fails
 
 ### Database Migrations
 
@@ -128,6 +133,8 @@ The database schema is managed through sqlx migrations. The full schema definiti
 - `poll_logs`, `poll_answers`, `poll_votes` - Discord poll tracking
 - `event_logs`, `event_interests`, `event_update_logs` - Discord event tracking
 - `snort_counter`, `user_snort_cooldowns` - Snort command tracking
+- `giphy_search_terms` - Configurable GIPHY search terms with priorities and active status
+- `giphy_cache` - Cached GIPHY results with usage tracking and metadata
 
 **Media & Recommendations:**
 - `media_recommendations` - Extracted media mentions from messages
@@ -175,6 +182,11 @@ Sentinel runs several scheduled jobs using `tokio_cron_scheduler`:
    - Tracks confidence scores and URLs
    - Incremental scanning from last checkpoint
 
+7. **GIPHY Cache Cleanup** (daily at 5 AM):
+   - Removes cached GIPHY entries not used in the last 7 days
+   - Helps manage database size and performance
+   - Logs number of entries cleaned up
+
 This keeps logs cross-referenced with accurate identity metadata for auditing or AI training.
 
 ---
@@ -201,7 +213,29 @@ All commands are implemented as Discord slash commands:
 
 **Global Watchlist Autocomplete**: The `/global vote` command now uses autocomplete for item selection instead of numeric IDs. Start typing part of an item's title to see suggestions showing the emoji, title, media type, and current net votes.
 
-**Snort Cooldown**: The `/snort` command has a per-user cooldown (default: 30 seconds). Each user can only snort once per cooldown period, but multiple users can snort simultaneously.
+**Snort Command**: The `/snort` command has advanced meme integration and cooldown management:
+- **Per-user cooldown**: Default 30 seconds, configurable in system settings
+- **Meme sources**: 
+  - Local files from `memes/snort/` directory (jpg, png, gif, webp, mp4)
+  - GIPHY API integration for Destiny-themed memes
+- **GIPHY features**:
+  - Searches only top 10 most relevant results for quality
+  - Intelligent caching to reduce API calls
+  - 60% chance to use GIPHY, 40% local files
+  - Never repeats the same meme back-to-back
+  - Falls back gracefully if GIPHY fails
+  - Database-driven search terms with priorities
+- **Search term management**:
+  ```sql
+  -- View active search terms
+  SELECT * FROM giphy_search_terms WHERE is_active = TRUE ORDER BY priority DESC;
+  
+  -- Add new search term
+  INSERT INTO giphy_search_terms (search_term, priority) VALUES ('custom meme search', 75);
+  
+  -- Disable a search term
+  UPDATE giphy_search_terms SET is_active = FALSE WHERE search_term = 'old search';
+  ```
 
 **Watchlist Features**: The `/watchlist` command provides personal media tracking:
 - `/watchlist view [all]` - View your personal watchlist or top community recommendations (use "all" to see community picks)
@@ -260,6 +294,7 @@ User permissions are validated against the `command_whitelist` and `super_user_w
 **Configurable Settings**: System settings stored in database:
 - `cache_media`: Enable/disable media caching (default: 'true')
 - `snort_cooldown_seconds`: Global cooldown for /snort command (default: '30')
+- `last_snort_meme`: Tracks the last used meme to prevent repeats (format: 'source:identifier')
 
 ---
 

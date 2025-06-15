@@ -2,9 +2,25 @@
 
 All notable changes to Sentinel Discord Bot will be documented in this file.
 
-## [Unreleased] - 2025-06-12
+## [Unreleased] - 2025-06-15
 
 ### Added
+
+- **GIPHY Integration for `/snort` Command** - Enhanced meme support with GIPHY API
+  - Automatic fetching of Destiny-themed memes from GIPHY
+  - Smart caching system to reduce API calls and improve performance
+  - Database-driven search terms with configurable priorities
+  - Only uses top 10 most relevant results for quality control
+  - Intelligent source selection: 60% GIPHY, 40% local files
+  - Prevents back-to-back repeats by tracking last used meme
+  - Falls back to local files if GIPHY fails or has no results
+  - Cached GIFs displayed as embeds with "Powered by GIPHY" footer
+  - New database tables: `giphy_search_terms` and `giphy_cache`
+  - Background job cleans up unused cache entries after 7 days
+  - Default search terms include "Destiny memes", "Destiny 2 memes", etc.
+  - Search terms can be managed directly in the database
+
+### Added (continued from 2025-06-12)
 - **Global Community Watchlist** - Collaborative watchlist with voting system
   - `/global view [type]` - View the global watchlist, optionally filtered by media type
   - `/global add` - Add media to the global watchlist with title, type, URL, and description

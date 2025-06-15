@@ -98,6 +98,7 @@ cargo run
 | `DISCORD_TOKEN` | Your Discord bot token | `MTIz...abc` |
 | `DATABASE_URL` | MariaDB/MySQL connection string | `mysql://user:pass@localhost/sentinel` |
 | `RUST_LOG` | Logging level (optional) | `info`, `debug`, `trace` |
+| `GIPHY_API_KEY` | GIPHY API key for meme integration (optional) | `abc123...` |
 
 ## Commands
 
@@ -121,7 +122,7 @@ All commands are implemented as Discord slash commands with autocomplete support
 - **Per-User Cooldowns**: Each user has independent cooldown for fun commands
 - **Smart Search**: Finds users by username, @handle, or server nickname
 - **Detailed Results**: Shows success/failure for each guild with specific error messages
-- **Meme Integration**: `/snort` command includes random meme attachments
+- **Meme Integration**: `/snort` command includes random meme attachments from local files or GIPHY API
 
 ### Legacy DM Support
 
@@ -184,7 +185,7 @@ UPDATE system_settings SET setting_value = 'true' WHERE setting_key = 'cache_med
 
 ### Snort Command
 
-The `/snort` command has per-user cooldowns and meme support:
+The `/snort` command has per-user cooldowns and advanced meme support:
 
 ```sql
 -- View current cooldown
@@ -194,7 +195,25 @@ SELECT setting_value FROM system_settings WHERE setting_key = 'snort_cooldown_se
 UPDATE system_settings SET setting_value = '60' WHERE setting_key = 'snort_cooldown_seconds';
 ```
 
-**Meme Setup**: Place image files in `memes/snort/` directory (jpg, png, gif, webp supported)
+**Meme Sources**:
+1. **Local Files**: Place image/video files in `memes/snort/` directory (jpg, png, gif, webp, mp4 supported)
+2. **GIPHY Integration**: Automatically fetches Destiny-themed memes from GIPHY API
+   - Searches top 10 most relevant results
+   - Caches results for better performance
+   - 60% chance to use GIPHY, 40% local files
+   - Never repeats the same meme back-to-back
+
+**GIPHY Search Terms** (configurable in database):
+```sql
+-- View active search terms
+SELECT * FROM giphy_search_terms WHERE is_active = TRUE ORDER BY priority DESC;
+
+-- Add custom search term
+INSERT INTO giphy_search_terms (search_term, priority) VALUES ('your search term', 50);
+
+-- Disable a search term
+UPDATE giphy_search_terms SET is_active = FALSE WHERE search_term = 'term to disable';
+```
 
 ### Data Retention
 
@@ -214,6 +233,7 @@ The bot runs several automated tasks:
 3. **Log Cleanup** (daily at 4 AM) - Removes database logs older than 31 days
 4. **Channel History Scan** (hourly) - Retrieves historical messages
 5. **Poll Expiry Check** (hourly) - Closes expired polls
+6. **GIPHY Cache Cleanup** (daily at 5 AM) - Removes unused GIPHY cache entries older than 7 days
 
 ## Database Schema
 
@@ -248,6 +268,8 @@ The bot uses MariaDB/MySQL with the following main tables:
 - `snort_counter` - Global snort statistics
 - `user_snort_cooldowns` - Per-user cooldown tracking
 - `channel_scan_history` - Historical message scan progress
+- `giphy_search_terms` - Configurable GIPHY search terms with priorities
+- `giphy_cache` - Cached GIPHY results with usage tracking
 
 ## Development
 
